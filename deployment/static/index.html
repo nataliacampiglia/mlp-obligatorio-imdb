@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IMDB Rate Prediction</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .card {
+      background: #1e293b;
+      border-radius: 12px;
+      padding: 2.5rem;
+      max-width: 520px;
+      width: 100%;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      margin-bottom: 0.4rem;
+      color: #f8fafc;
+    }
+    p.subtitle {
+      font-size: 0.9rem;
+      color: #94a3b8;
+      margin-bottom: 2rem;
+    }
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      padding: 0.6rem 1rem;
+      border-radius: 8px;
+      background: #0f172a;
+      margin-bottom: 1.5rem;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #64748b;
+    }
+    .dot.ok { background: #22c55e; }
+    .dot.error { background: #ef4444; }
+    .status-text { color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>IMDB Rate Prediction</h1>
+    <p class="subtitle">Análisis de sentimiento para reseñas de películas</p>
+
+    <div class="status-bar">
+      <span class="dot" id="dot"></span>
+      <span class="status-text" id="status-text">Verificando servicio...</span>
+    </div>
+  </div>
+
+  <script>
+    async function checkStatus() {
+      const dot = document.getElementById("dot");
+      const text = document.getElementById("status-text");
+      try {
+        const res = await fetch("/status");
+        const data = await res.json();
+        if (data.status === "ok") {
+          dot.classList.add("ok");
+          text.textContent = "Servicio activo — modelo: " + data.model;
+        } else {
+          dot.classList.add("error");
+          text.textContent = "Servicio con errores";
+        }
+      } catch {
+        dot.classList.add("error");
+        text.textContent = "No se pudo conectar al servicio";
+      }
+    }
+    checkStatus();
+  </script>
+</body>
+</html>
