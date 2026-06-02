@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -30,6 +31,9 @@ if __name__ == "__main__":
         max_movies=settings["MaxMovies"],
         max_reviews_per_movie=settings["MaxReviewsPerMovie"],
         output_dir=settings["OutputDir"],
+        session_state_path=settings["SessionStatePath"],
+        imdb_email=os.environ.get("IMDB_EMAIL", ""),
+        imdb_password=os.environ.get("IMDB_PASSWORD", ""),
         log_level=settings["LogLevel"],
     )
 

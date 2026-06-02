@@ -75,6 +75,7 @@ def insert_reviews(reviews: list[Review]) -> None:
                     "reviewer_name": r.reviewer_name,
                     "rating": r.rating,
                     "date": r.date,
+                    "review_title": r.review_title,
                     "review_text": r.review_text,
                     "helpful_votes": r.helpful_votes,
                 }

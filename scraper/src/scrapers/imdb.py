@@ -6,9 +6,10 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import BrowserContext, Page, sync_playwright
 
 from src.database.database_connection import insert_movie, insert_reviews
 from src.settings import custom_logger
@@ -55,6 +56,9 @@ class IMDBScraper:
         max_movies: int,
         max_reviews_per_movie: int,
         output_dir: str,
+        session_state_path: str = "",
+        imdb_email: str = "",
+        imdb_password: str = "",
         log_level: int = 20,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -62,9 +66,20 @@ class IMDBScraper:
         self.max_movies = max_movies
         self.max_reviews_per_movie = max_reviews_per_movie
         self.output_dir = output_dir
+        self.session_state_path = session_state_path
+        self.imdb_email = imdb_email
+        self.imdb_password = imdb_password
         self.logger = custom_logger(self.__class__.__name__, log_level)
 
         os.makedirs(self.output_dir, exist_ok=True)
+        if session_state_path:
+            os.makedirs(Path(session_state_path).parent, exist_ok=True)
+
+    _UA = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
 
     def run(self) -> None:
         self.logger.info(
@@ -75,15 +90,31 @@ class IMDBScraper:
         )
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
+
+            saved_state = (
+                self.session_state_path
+                if self.session_state_path and Path(self.session_state_path).exists()
+                else None
+            )
             context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
+                user_agent=self._UA,
                 locale="en-US",
+                storage_state=saved_state,
             )
             page = context.new_page()
+
+            # Login if credentials are provided
+            self._logged_in = False
+            if self.imdb_email and self.imdb_password:
+                if saved_state and self._is_session_valid(page):
+                    self.logger.info("Reusing saved IMDB session")
+                    self._logged_in = True
+                else:
+                    self._logged_in = self._login(page, context)
+                    if not self._logged_in:
+                        self.logger.error(
+                            "IMDB login failed — reviews will be limited to featured only"
+                        )
 
             movie_ids = self._scrape_top_list(page)
             self.logger.info("Found %d movie IDs in Top 250 list", len(movie_ids))
@@ -113,6 +144,64 @@ class IMDBScraper:
 
             browser.close()
         self.logger.info("Scraping complete.")
+
+    # ------------------------------------------------------------------
+    # Authentication
+    # ------------------------------------------------------------------
+
+    def _is_session_valid(self, page: Page) -> bool:
+        """Return True if the saved session cookies are still active."""
+        page.goto(f"{self.base_url}/watchlist/", wait_until="domcontentloaded")
+        return "/ap/signin" not in page.url
+
+    def _login(self, page: Page, context: BrowserContext) -> bool:
+        """Log in to IMDB via Amazon auth. Returns True on success."""
+        self.logger.info("Logging in to IMDB as %s", self.imdb_email)
+        login_url = (
+            f"{self.base_url}/ap/signin"
+            "?openid.return_to=https%3A%2F%2Fwww.imdb.com%2F"
+            "&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select"
+            "&openid.assoc_handle=imdb_us"
+            "&openid.mode=checkid_setup"
+            "&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select"
+            "&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
+        )
+        try:
+            page.goto(login_url, wait_until="domcontentloaded")
+
+            # Email field
+            page.wait_for_selector("input#ap_email", timeout=10000)
+            page.fill("input#ap_email", self.imdb_email)
+
+            # Some flows show a separate "Continue" button before the password field
+            continue_btn = page.locator("input#continue").first
+            if continue_btn.count():
+                continue_btn.click()
+
+            # Password field
+            page.wait_for_selector("input#ap_password", timeout=8000)
+            page.fill("input#ap_password", self.imdb_password)
+            page.click("input#signInSubmit")
+
+            # Wait for redirect back to IMDB (not Amazon)
+            page.wait_for_url("**/imdb.com/**", timeout=15000)
+
+            if "/ap/signin" in page.url or "/ap/mfa" in page.url:
+                self.logger.error(
+                    "Login redirect landed on %s — check credentials or disable 2FA", page.url
+                )
+                return False
+
+            # Persist session so next run skips login
+            if self.session_state_path:
+                context.storage_state(path=self.session_state_path)
+                self.logger.info("Session saved to %s", self.session_state_path)
+
+            self.logger.info("IMDB login successful")
+            return True
+        except Exception as e:
+            self.logger.error("Login error: %s", e)
+            return False
 
     # ------------------------------------------------------------------
     # Top-list scraping
@@ -251,40 +340,38 @@ class IMDBScraper:
     # Reviews scraping
     # ------------------------------------------------------------------
 
-    # Selectors tried in order — from most specific to broadest fallback
-    _REVIEW_CARD_SELECTORS = [
-        "article[data-testid='review-card']",
-        "div[data-testid='review-card']",
-        "article.sc-f37d8606-1",
-        "div.review-container",
+    # Tried in order on the /reviews/ page
+    _REVIEWS_PAGE_SELECTORS = [
+        "div[data-testid='shoveler-items-container'] > div",
+        "div.ipc-list-card--span",
         "article",
+        "div.lister-item",
     ]
 
-    def _find_review_cards(self, page: Page) -> list:
-        for selector in self._REVIEW_CARD_SELECTORS:
-            cards = page.locator(selector).all()
-            if cards:
-                return cards
-        return []
-
     def _scrape_reviews(self, page: Page, imdb_id: str) -> list[Review]:
+        if self._logged_in:
+            reviews = self._scrape_reviews_page(page, imdb_id)
+            if reviews:
+                return reviews
+            self.logger.warning("Reviews page returned nothing for %s — falling back to featured", imdb_id)
+
+        return self._scrape_featured_reviews(page, imdb_id)
+
+    def _scrape_reviews_page(self, page: Page, imdb_id: str) -> list[Review]:
+        """Scrape the full /reviews/ listing page (requires login)."""
         url = f"{self.base_url}/title/{imdb_id}/reviews/"
         page.goto(url, wait_until="domcontentloaded")
-
-        # Wait for any known review container; return [] if none appear
-        try:
-            page.wait_for_selector(
-                ", ".join(self._REVIEW_CARD_SELECTORS), timeout=10000
-            )
-        except Exception:
-            self.logger.warning("No review cards found for %s — skipping reviews", imdb_id)
-            return []
 
         reviews: list[Review] = []
         collected = 0
 
         while collected < self.max_reviews_per_movie:
-            cards = self._find_review_cards(page)
+            cards: list = []
+            for selector in self._REVIEWS_PAGE_SELECTORS:
+                cards = page.locator(selector).all()
+                if cards:
+                    break
+
             if not cards:
                 break
 
@@ -307,62 +394,68 @@ class IMDBScraper:
 
         return reviews
 
+    def _scrape_featured_reviews(self, page: Page, imdb_id: str) -> list[Review]:
+        """Extract Featured reviews from the already-loaded main movie page."""
+        # Navigate back to the main movie page if we left it
+        if f"/title/{imdb_id}" not in page.url:
+            page.goto(f"{self.base_url}/title/{imdb_id}/", wait_until="domcontentloaded")
+
+        try:
+            page.wait_for_selector("section[data-testid='UserReviews']", timeout=8000)
+        except Exception:
+            self.logger.warning("No UserReviews section found for %s", imdb_id)
+            return []
+
+        cards = page.locator("div[data-testid='shoveler-items-container'] > div").all()
+        if not cards:
+            self.logger.warning("No featured review cards found for %s", imdb_id)
+            return []
+
+        reviews: list[Review] = []
+        for card in cards[: self.max_reviews_per_movie]:
+            review = self._parse_review_card(card, imdb_id)
+            if review:
+                reviews.append(review)
+        return reviews
+
     def _parse_review_card(self, card: Any, imdb_id: str) -> Review | None:
         try:
-            # Review text — try multiple layouts
-            text_el = card.locator(
-                "div[data-testid='review-overflow'], "
-                "div[data-testid='review-text'], "
-                "div[data-testid='review-summary'] + div, "
-                "div.text.show-more__control, "
-                "div.content .text, "
-                "div.ipc-html-content-inner-div"
-            ).first
+            # Review text
+            text_el = card.locator("div.ipc-html-content-inner-div").first
             review_text = text_el.inner_text().strip() if text_el.count() else ""
             if not review_text:
                 return None
 
-            # Rating (reviewer's own score)
+            # Rating from aria-label "Author rating is 7"
             rating: int | None = None
-            rating_el = card.locator(
-                "span[data-testid='review-rating'], span.rating-other-user-rating span"
-            ).first
+            rating_el = card.locator("span.ipc-rating-star[aria-label^='Author rating']").first
             if rating_el.count():
-                try:
-                    rating = int(rating_el.inner_text().strip().split("/")[0])
-                except (ValueError, IndexError):
-                    pass
-
-            # Reviewer name
-            name_el = card.locator(
-                "a[data-testid='author-name'], span.display-name-link a"
-            ).first
-            reviewer_name = name_el.inner_text().strip() if name_el.count() else None
-
-            # Review date
-            date_el = card.locator(
-                "span[data-testid='review-date'], span.review-date"
-            ).first
-            date = date_el.inner_text().strip() if date_el.count() else None
-
-            # Helpful votes
-            helpful_votes: int | None = None
-            helpful_el = card.locator(
-                "div[data-testid='review-helpful'], div.actions.text-muted"
-            ).first
-            if helpful_el.count():
-                helpful_text = helpful_el.inner_text()
-                m = re.search(r"(\d[\d,]*)", helpful_text)
+                label = rating_el.get_attribute("aria-label") or ""
+                m = re.search(r"(\d+)", label)
                 if m:
-                    helpful_votes = int(m.group(1).replace(",", ""))
+                    rating = int(m.group(1))
+
+            # Reviewer name from aria-label "User gobosox"
+            reviewer_name: str | None = None
+            name_el = card.locator("a[aria-label^='User ']").first
+            if name_el.count():
+                label = name_el.get_attribute("aria-label") or ""
+                reviewer_name = label.removeprefix("User ").strip() or None
+
+            # Review title from h3
+            review_title: str | None = None
+            title_el = card.locator("h3.ipc-title__text").first
+            if title_el.count():
+                review_title = title_el.inner_text().strip() or None
 
             return Review(
                 movie_imdb_id=imdb_id,
                 reviewer_name=reviewer_name,
                 rating=rating,
-                date=date,
+                date=None,
+                review_title=review_title,
                 review_text=review_text,
-                helpful_votes=helpful_votes,
+                helpful_votes=None,
             )
         except Exception as e:
             self.logger.debug("Failed to parse review card: %s", e)
@@ -372,17 +465,50 @@ class IMDBScraper:
     # Persistence
     # ------------------------------------------------------------------
 
+    def _read_jsonl(self, path: str) -> list[dict]:
+        if not os.path.exists(path):
+            return []
+        lines = []
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        lines.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        return lines
+
     def _save_movie(self, movie: Movie) -> None:
         jsonl_path = os.path.join(self.output_dir, f"{movie.imdb_id}.jsonl")
-        entry = movie.model_dump()
-        with open(jsonl_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
+        existing = self._read_jsonl(jsonl_path)
+        # Keep only review lines; the movie entry is replaced by the fresh one
+        reviews_only = [obj for obj in existing if obj.get("type") == "review"]
+        with open(jsonl_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(movie.model_dump(), ensure_ascii=False) + "\n")
+            for obj in reviews_only:
+                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
         insert_movie(movie)
 
     def _save_reviews(self, reviews: list[Review]) -> None:
+        if not reviews:
+            return
+        imdb_id = reviews[0].movie_imdb_id
+        jsonl_path = os.path.join(self.output_dir, f"{imdb_id}.jsonl")
+        existing = self._read_jsonl(jsonl_path)
+        # Build a set of already-saved reviewer keys to skip duplicates
+        seen: set[str] = {
+            obj.get("reviewer_name") or obj.get("review_title", "")
+            for obj in existing
+            if obj.get("type") == "review"
+        }
+        new_entries = []
         for review in reviews:
-            jsonl_path = os.path.join(self.output_dir, f"{review.movie_imdb_id}.jsonl")
-            entry = {"type": "review", **review.model_dump()}
+            key = review.reviewer_name or review.review_title or ""
+            if key and key not in seen:
+                seen.add(key)
+                new_entries.append({"type": "review", **review.model_dump()})
+        if new_entries:
             with open(jsonl_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                for entry in new_entries:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")

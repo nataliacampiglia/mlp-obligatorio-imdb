@@ -6,4 +6,5 @@ IMDBScraper:
   MaxReviewsPerMovie: 25
   DBPath: src/database/imdb.db
   OutputDir: data/movies
+  SessionStatePath: data/session.json
   LogLevel: 20
