@@ -39,3 +39,8 @@ credentials
 
 # Scraper
 scraper/data/
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3

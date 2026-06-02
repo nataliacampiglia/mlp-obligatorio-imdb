@@ -92,15 +92,22 @@ class IMDBScraper:
                 self.logger.info("Processing movie %d/%d: %s", i, self.max_movies, imdb_id)
                 try:
                     movie = self._scrape_movie(page, imdb_id)
-                    if movie:
-                        self._save_movie(movie)
-                        reviews = self._scrape_reviews(page, imdb_id)
-                        insert_reviews(reviews)
-                        self.logger.info(
-                            "Saved movie %s with %d reviews", imdb_id, len(reviews)
-                        )
+                    if not movie:
+                        continue
+                    self._save_movie(movie)
                 except Exception as e:
-                    self.logger.error("Failed to process %s: %s", imdb_id, e)
+                    self.logger.error("Failed to scrape movie %s: %s", imdb_id, e)
+                    continue
+
+                try:
+                    reviews = self._scrape_reviews(page, imdb_id)
+                    insert_reviews(reviews)
+                    self._save_reviews(reviews)
+                    self.logger.info(
+                        "Saved movie %s with %d reviews", imdb_id, len(reviews)
+                    )
+                except Exception as e:
+                    self.logger.error("Failed to scrape reviews for %s: %s", imdb_id, e)
 
                 time.sleep(1.5)
 
@@ -244,25 +251,40 @@ class IMDBScraper:
     # Reviews scraping
     # ------------------------------------------------------------------
 
+    # Selectors tried in order — from most specific to broadest fallback
+    _REVIEW_CARD_SELECTORS = [
+        "article[data-testid='review-card']",
+        "div[data-testid='review-card']",
+        "article.sc-f37d8606-1",
+        "div.review-container",
+        "article",
+    ]
+
+    def _find_review_cards(self, page: Page) -> list:
+        for selector in self._REVIEW_CARD_SELECTORS:
+            cards = page.locator(selector).all()
+            if cards:
+                return cards
+        return []
+
     def _scrape_reviews(self, page: Page, imdb_id: str) -> list[Review]:
         url = f"{self.base_url}/title/{imdb_id}/reviews/"
         page.goto(url, wait_until="domcontentloaded")
+
+        # Wait for any known review container; return [] if none appear
+        try:
+            page.wait_for_selector(
+                ", ".join(self._REVIEW_CARD_SELECTORS), timeout=10000
+            )
+        except Exception:
+            self.logger.warning("No review cards found for %s — skipping reviews", imdb_id)
+            return []
 
         reviews: list[Review] = []
         collected = 0
 
         while collected < self.max_reviews_per_movie:
-            page.wait_for_selector(
-                "article.sc-f37d8606-1, div.review-container", timeout=10000
-            )
-
-            # New IMDB layout (2024+)
-            cards = page.locator("article.sc-f37d8606-1").all()
-
-            # Legacy layout fallback
-            if not cards:
-                cards = page.locator("div.review-container").all()
-
+            cards = self._find_review_cards(page)
             if not cards:
                 break
 
@@ -274,8 +296,9 @@ class IMDBScraper:
                     reviews.append(review)
                     collected += 1
 
-            # Try to load more reviews
-            load_more = page.locator("button[data-testid='load-more-btn'], button.ipl-load-more__button").first
+            load_more = page.locator(
+                "button[data-testid='load-more-btn'], button.ipl-load-more__button"
+            ).first
             if load_more.count() and collected < self.max_reviews_per_movie:
                 load_more.click()
                 time.sleep(1.5)
@@ -286,11 +309,14 @@ class IMDBScraper:
 
     def _parse_review_card(self, card: Any, imdb_id: str) -> Review | None:
         try:
-            # Review text — try both layouts
+            # Review text — try multiple layouts
             text_el = card.locator(
+                "div[data-testid='review-overflow'], "
+                "div[data-testid='review-text'], "
                 "div[data-testid='review-summary'] + div, "
                 "div.text.show-more__control, "
-                "div.content .text"
+                "div.content .text, "
+                "div.ipc-html-content-inner-div"
             ).first
             review_text = text_el.inner_text().strip() if text_el.count() else ""
             if not review_text:
@@ -347,11 +373,16 @@ class IMDBScraper:
     # ------------------------------------------------------------------
 
     def _save_movie(self, movie: Movie) -> None:
-        # JSONL file
         jsonl_path = os.path.join(self.output_dir, f"{movie.imdb_id}.jsonl")
         entry = movie.model_dump()
         with open(jsonl_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-        # SQLite
         insert_movie(movie)
+
+    def _save_reviews(self, reviews: list[Review]) -> None:
+        for review in reviews:
+            jsonl_path = os.path.join(self.output_dir, f"{review.movie_imdb_id}.jsonl")
+            entry = {"type": "review", **review.model_dump()}
+            with open(jsonl_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")

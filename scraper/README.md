@@ -16,10 +16,22 @@ poetry install
 poetry run playwright install chromium
 ```
 
+Or from the project root using Make:
+
+```bash
+make scraper-install
+```
+
 ## Run
 
 ```bash
 poetry run python src/main.py
+```
+
+Or from the project root using Make:
+
+```bash
+make scraper-run
 ```
 
 ## Configuration
