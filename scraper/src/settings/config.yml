@@ -1,0 +1,9 @@
+IMDBScraper:
+  BaseUrl: https://www.imdb.com
+  TopListUrl: https://www.imdb.com/chart/top/
+  # 250
+  MaxMovies: 20
+  MaxReviewsPerMovie: 25
+  DBPath: src/database/imdb.db
+  OutputDir: data/movies
+  LogLevel: 20

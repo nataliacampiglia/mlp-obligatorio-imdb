@@ -1,0 +1,36 @@
+import argparse
+import sys
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from src.database.database_connection import create_tables
+from src.scrapers.imdb import IMDBScraper
+from src.settings.settings import load_settings
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="IMDB scraper → SQLite + JSONL")
+    parser.add_argument(
+        "--scraper",
+        choices=["IMDBScraper"],
+        default="IMDBScraper",
+        help='Scraper to run (default: "IMDBScraper")',
+    )
+    args = parser.parse_args()
+
+    create_tables()
+
+    settings = load_settings(key="IMDBScraper")
+
+    scraper = IMDBScraper(
+        base_url=settings["BaseUrl"],
+        top_list_url=settings["TopListUrl"],
+        max_movies=settings["MaxMovies"],
+        max_reviews_per_movie=settings["MaxReviewsPerMovie"],
+        output_dir=settings["OutputDir"],
+        log_level=settings["LogLevel"],
+    )
+
+    scraper.run()

@@ -36,3 +36,6 @@ credentials
 .DS_Store
 .env
 *.log
+
+# Scraper
+scraper/data/
