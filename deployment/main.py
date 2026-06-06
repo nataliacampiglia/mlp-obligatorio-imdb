@@ -6,6 +6,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
+WANDB_PROJECT   = "food-inflation-forecasting"
+WANDB_ARTIFACT  = "food-inflation-model"
+WANDB_ALIAS     = "production"
+
 app = FastAPI(title="IMDB Rate Prediction")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -20,8 +24,8 @@ def _get_ssm_parameter(name: str) -> str:
 def _get_wandb_credentials() -> tuple[str, str]:
     """Lee credenciales de SSM. Si no están disponibles, cae en variables de entorno."""
     try:
-        user = _get_ssm_parameter("wandb-user")
-        api_key = _get_ssm_parameter("wandb-password")
+        user = _get_ssm_parameter("wandb-org")
+        api_key = _get_ssm_parameter("wandb-api-key")
         return user, api_key
     except (BotoCoreError, ClientError):
         user = os.getenv("WANDB_USER")
@@ -41,21 +45,22 @@ def status():
     return {"status": "ok", "model": "not loaded"}
 
 
-@app.get("/projects")
-def list_projects():
+@app.get("/model")
+def get_production_model():
     try:
-        user, api_key = _get_wandb_credentials()
+        entity, api_key = _get_wandb_credentials()
     except (BotoCoreError, ClientError) as e:
         raise HTTPException(status_code=503, detail=f"No se pudo leer credenciales de SSM: {e}")
 
     try:
         api = wandb.Api(api_key=api_key)
-        projects = api.projects(entity=user)
+        artifact = api.artifact(f"{entity}/{WANDB_PROJECT}/{WANDB_ARTIFACT}:{WANDB_ALIAS}")
         return {
-            "projects": [
-                {"name": p.name, "entity": p.entity, "url": p.url}
-                for p in projects
-            ]
+            "name": WANDB_ARTIFACT,
+            "version": artifact.version,
+            "aliases": artifact.aliases,
+            "created_at": artifact.created_at,
+            "url": artifact.url,
         }
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Error al conectar con W&B: {e}")

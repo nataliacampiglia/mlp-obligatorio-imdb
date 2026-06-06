@@ -63,30 +63,42 @@
       color: #cbd5e1;
       margin-bottom: 0.75rem;
     }
-    .project-list {
-      list-style: none;
+    .model-card {
+      background: #0f172a;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
       display: flex;
       flex-direction: column;
       gap: 0.5rem;
     }
-    .project-list li a {
-      display: block;
-      padding: 0.6rem 1rem;
-      border-radius: 8px;
-      background: #0f172a;
+    .model-card a {
       color: #93c5fd;
       text-decoration: none;
-      font-size: 0.9rem;
-      transition: background 0.15s;
+      font-weight: 600;
+      font-size: 1rem;
     }
-    .project-list li a:hover { background: #1e3a5f; }
-    .project-list li a span {
-      display: block;
+    .model-card a:hover { text-decoration: underline; }
+    .model-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .badge {
       font-size: 0.75rem;
-      color: #64748b;
-      margin-top: 0.15rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      background: #1e3a5f;
+      color: #93c5fd;
     }
-    .msg { font-size: 0.85rem; color: #64748b; padding: 0.6rem 1rem; }
+    .badge.production {
+      background: #14532d;
+      color: #86efac;
+    }
+    .model-date {
+      font-size: 0.8rem;
+      color: #64748b;
+    }
+    .msg { font-size: 0.85rem; color: #64748b; }
   </style>
 </head>
 <body>
@@ -99,10 +111,8 @@
       <span class="status-text" id="status-text">Verificando servicio...</span>
     </div>
 
-    <h2>Proyectos en Weights &amp; Biases</h2>
-    <ul class="project-list" id="project-list">
-      <li><p class="msg">Cargando proyectos...</p></li>
-    </ul>
+    <h2>Modelo en producción</h2>
+    <div id="model-container"><p class="msg">Cargando modelo...</p></div>
   </div>
 
   <script>
@@ -125,35 +135,36 @@
       }
     }
 
-    async function loadProjects() {
-      const list = document.getElementById("project-list");
+    async function loadModel() {
+      const container = document.getElementById("model-container");
       try {
-        const res = await fetch("/projects");
+        const res = await fetch("/model");
         if (!res.ok) {
           const err = await res.json();
-          list.innerHTML = `<li><p class="msg">Error: ${err.detail}</p></li>`;
+          container.innerHTML = `<p class="msg">Error: ${err.detail}</p>`;
           return;
         }
-        const data = await res.json();
-        if (data.projects.length === 0) {
-          list.innerHTML = `<li><p class="msg">No se encontraron proyectos.</p></li>`;
-          return;
-        }
-        list.innerHTML = data.projects.map(p => `
-          <li>
-            <a href="${p.url}" target="_blank" rel="noopener">
-              ${p.name}
-              <span>${p.entity}</span>
-            </a>
-          </li>
-        `).join("");
+        const m = await res.json();
+        const date = m.created_at
+          ? new Date(m.created_at).toLocaleDateString("es-ES", { year: "numeric", month: "long", day: "numeric" })
+          : "";
+        const badges = m.aliases.map(a =>
+          `<span class="badge ${a === "production" ? "production" : ""}">${a}</span>`
+        ).join("");
+        container.innerHTML = `
+          <div class="model-card">
+            <a href="${m.url}" target="_blank" rel="noopener">${m.name} ${m.version}</a>
+            <div class="model-meta">${badges}</div>
+            ${date ? `<span class="model-date">Creado el ${date}</span>` : ""}
+          </div>
+        `;
       } catch {
-        list.innerHTML = `<li><p class="msg">No se pudo cargar los proyectos.</p></li>`;
+        container.innerHTML = `<p class="msg">No se pudo cargar el modelo.</p>`;
       }
     }
 
     checkStatus();
-    loadProjects();
+    loadModel();
   </script>
 </body>
 </html>
