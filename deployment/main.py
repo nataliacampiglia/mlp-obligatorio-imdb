@@ -6,13 +6,19 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-WANDB_PROJECT   = "food-inflation-forecasting"
-WANDB_ARTIFACT  = "food-inflation-model"
-WANDB_ALIAS     = "production"
+from imdb_rating.schemas import ReviewInput, PredictionOutput
+from imdb_rating.registry import load as load_model_from_registry
+
+WANDB_PROJECT  = "imdb-rating"
+WANDB_ARTIFACT = "imdb-rating-model"
+WANDB_ALIAS    = "production"
 
 app = FastAPI(title="IMDB Rate Prediction")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+_MODEL = None
+_MODEL_VERSION: str | None = None
 
 
 def _get_ssm_parameter(name: str) -> str:
@@ -22,7 +28,7 @@ def _get_ssm_parameter(name: str) -> str:
 
 
 def _get_wandb_credentials() -> tuple[str, str]:
-    """Lee credenciales de SSM. Si no están disponibles, cae en variables de entorno."""
+    """Read credentials from SSM, falling back to env vars."""
     try:
         user = _get_ssm_parameter("wandb-org")
         api_key = _get_ssm_parameter("wandb-api-key")
@@ -35,6 +41,28 @@ def _get_wandb_credentials() -> tuple[str, str]:
         return user, api_key
 
 
+@app.on_event("startup")
+def _load_model() -> None:
+    global _MODEL, _MODEL_VERSION
+    try:
+        entity, api_key = _get_wandb_credentials()
+    except (BotoCoreError, ClientError) as e:
+        print(f"[startup] W&B credentials unavailable, skipping model load: {e}")
+        return
+
+    try:
+        _MODEL, _MODEL_VERSION = load_model_from_registry(
+            project=WANDB_PROJECT,
+            artifact_name=WANDB_ARTIFACT,
+            entity=entity,
+            alias=WANDB_ALIAS,
+            api_key=api_key,
+        )
+        print(f"[startup] Loaded {WANDB_ARTIFACT} version {_MODEL_VERSION}")
+    except Exception as e:
+        print(f"[startup] Could not load model from W&B: {e}")
+
+
 @app.get("/")
 def index():
     return FileResponse("static/index.html")
@@ -42,7 +70,11 @@ def index():
 
 @app.get("/status")
 def status():
-    return {"status": "ok", "model": "not loaded"}
+    return {
+        "status": "ok",
+        "model": "loaded" if _MODEL is not None else "not loaded",
+        "model_version": _MODEL_VERSION,
+    }
 
 
 @app.get("/model")
@@ -64,3 +96,12 @@ def get_production_model():
         }
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Error al conectar con W&B: {e}")
+
+
+@app.post("/predict", response_model=PredictionOutput)
+def predict(payload: ReviewInput) -> PredictionOutput:
+    if _MODEL is None or _MODEL_VERSION is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    prediction = int(_MODEL.predict([payload.model_dump()])[0])
+    return PredictionOutput(prediction=prediction, model_version=_MODEL_VERSION)
