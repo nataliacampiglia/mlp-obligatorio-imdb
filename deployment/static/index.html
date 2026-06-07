@@ -21,7 +21,7 @@
       background: #1e293b;
       border-radius: 12px;
       padding: 2.5rem;
-      max-width: 520px;
+      max-width: 560px;
       width: 100%;
       box-shadow: 0 4px 24px rgba(0,0,0,0.4);
     }
@@ -51,10 +51,54 @@
       height: 10px;
       border-radius: 50%;
       background: #64748b;
+      flex-shrink: 0;
     }
-    .dot.ok { background: #22c55e; }
+    .dot.ok    { background: #22c55e; }
     .dot.error { background: #ef4444; }
     .status-text { color: #94a3b8; }
+
+    h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #cbd5e1;
+      margin-bottom: 0.75rem;
+    }
+    .model-card {
+      background: #0f172a;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .model-card a {
+      color: #93c5fd;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 1rem;
+    }
+    .model-card a:hover { text-decoration: underline; }
+    .model-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .badge {
+      font-size: 0.75rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      background: #1e3a5f;
+      color: #93c5fd;
+    }
+    .badge.production {
+      background: #14532d;
+      color: #86efac;
+    }
+    .model-date {
+      font-size: 0.8rem;
+      color: #64748b;
+    }
+    .msg { font-size: 0.85rem; color: #64748b; }
   </style>
 </head>
 <body>
@@ -66,6 +110,9 @@
       <span class="dot" id="dot"></span>
       <span class="status-text" id="status-text">Verificando servicio...</span>
     </div>
+
+    <h2>Modelo en producción</h2>
+    <div id="model-container"><p class="msg">Cargando modelo...</p></div>
   </div>
 
   <script>
@@ -87,7 +134,37 @@
         text.textContent = "No se pudo conectar al servicio";
       }
     }
+
+    async function loadModel() {
+      const container = document.getElementById("model-container");
+      try {
+        const res = await fetch("/model");
+        if (!res.ok) {
+          const err = await res.json();
+          container.innerHTML = `<p class="msg">Error: ${err.detail}</p>`;
+          return;
+        }
+        const m = await res.json();
+        const date = m.created_at
+          ? new Date(m.created_at).toLocaleDateString("es-ES", { year: "numeric", month: "long", day: "numeric" })
+          : "";
+        const badges = m.aliases.map(a =>
+          `<span class="badge ${a === "production" ? "production" : ""}">${a}</span>`
+        ).join("");
+        container.innerHTML = `
+          <div class="model-card">
+            <a href="${m.url}" target="_blank" rel="noopener">${m.name} ${m.version}</a>
+            <div class="model-meta">${badges}</div>
+            ${date ? `<span class="model-date">Creado el ${date}</span>` : ""}
+          </div>
+        `;
+      } catch {
+        container.innerHTML = `<p class="msg">No se pudo cargar el modelo.</p>`;
+      }
+    }
+
     checkStatus();
+    loadModel();
   </script>
 </body>
 </html>

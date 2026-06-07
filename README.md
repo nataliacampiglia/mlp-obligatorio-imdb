@@ -80,9 +80,14 @@ export AWS_ACCOUNT_ID=<tu-account-id>
 ### Paso 2 — Provisionar infraestructura con Terraform
 
 ```bash
+# Obtener el account ID y construir la URI de la imagen
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+export AWS_REGION=us-east-1
+export IMAGE_URI="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/imdb-rate-prediction:latest"
+
 cd infra/
 terraform init
-terraform apply -var="image_uri=<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/imdb-rate-prediction:latest"
+terraform apply -var="image_uri=$IMAGE_URI"
 ```
 
 Al finalizar, Terraform imprime la URL pública de la aplicación:
@@ -100,12 +105,21 @@ curl http://<app_url>/status
 
 ### Destruir la infraestructura
 
+Para eliminar todos los recursos de AWS creados por Terraform (ECS, ALB, security groups, CloudWatch logs):
+
 ```bash
 cd infra/
-terraform destroy -var="image_uri=<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/imdb-rate-prediction:latest"
+terraform destroy
 ```
 
-> El repositorio ECR no es gestionado por Terraform (fue creado por el script). Para eliminarlo manualmente:
+Terraform pedirá confirmación antes de eliminar. Para omitirla:
+
+```bash
+cd infra/
+terraform destroy -auto-approve
+```
+
+> **Nota:** El repositorio ECR y su imagen **no son destruidos** por Terraform (fueron creados por el script). Para eliminarlos manualmente:
 > ```bash
 > aws ecr delete-repository --repository-name imdb-rate-prediction --force --region us-east-1
 > ```
