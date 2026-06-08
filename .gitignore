@@ -8,12 +8,12 @@ dist/
 build/
 
 # Terraform
-infra/.terraform/
-infra/.terraform.lock.hcl
-infra/terraform.tfstate
-infra/terraform.tfstate.backup
-infra/terraform.tfstate.*.backup
-infra/*.tfvars
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/terraform.tfstate.*.backup
+**/*.tfvars
 
 # Credenciales AWS (nunca commitear)
 .aws/
