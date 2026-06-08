@@ -22,7 +22,6 @@ CREATE_REVIEWS_TABLE = """
         movie_imdb_id  TEXT    NOT NULL,
         reviewer_name  TEXT,
         rating         INTEGER,
-        date           TEXT,
         review_title   TEXT,
         review_text    TEXT    NOT NULL,
         helpful_votes  INTEGER
@@ -39,8 +38,8 @@ INSERT_MOVIE = """
 """
 
 INSERT_REVIEW = """
-    INSERT INTO reviews (movie_imdb_id, reviewer_name, rating, date, review_title, review_text, helpful_votes)
-    VALUES (:movie_imdb_id, :reviewer_name, :rating, :date, :review_title, :review_text, :helpful_votes)
+    INSERT INTO reviews (movie_imdb_id, reviewer_name, rating, review_title, review_text, helpful_votes)
+    VALUES (:movie_imdb_id, :reviewer_name, :rating, :review_title, :review_text, :helpful_votes)
 """
 
 SELECT_ALL_MOVIES = "SELECT * FROM movies"

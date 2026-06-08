@@ -74,7 +74,6 @@ def insert_reviews(reviews: list[Review]) -> None:
                     "movie_imdb_id": r.movie_imdb_id,
                     "reviewer_name": r.reviewer_name,
                     "rating": r.rating,
-                    "date": r.date,
                     "review_title": r.review_title,
                     "review_text": r.review_text,
                     "helpful_votes": r.helpful_votes,

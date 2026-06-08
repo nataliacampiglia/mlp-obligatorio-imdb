@@ -5,7 +5,7 @@ IMDB data scraper for a movie rating prediction ML project (obligatorio MLP).
 ## What it collects
 
 - **Movies**: title, year, IMDB rating, votes, genres, director(s), top cast, runtime, certificate (PG/R/etc.), Metascore, plot — from random IMDB title IDs between `tt0000001` and `tt2488998`
-- **Reviews**: reviewer name, score (1–10), date, review text, helpful votes — up to 25 reviews per movie
+- **Reviews**: reviewer name, score (1–10), review text, helpful votes — up to 25 reviews per movie
 
 Data is stored in both **SQLite** (`src/database/imdb.db`) and **JSONL** files (`data/movies/`).
 

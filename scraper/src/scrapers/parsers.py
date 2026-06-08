@@ -161,7 +161,6 @@ def parse_review_card(card: Any, imdb_id: str) -> Review | None:
             movie_imdb_id=imdb_id,
             reviewer_name=reviewer_name,
             rating=rating,
-            date=None,
             review_title=review_title,
             review_text=review_text,
             helpful_votes=None,
