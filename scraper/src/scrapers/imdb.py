@@ -1,35 +1,23 @@
-"""Scraper for https://www.imdb.com Top 250 movies using Playwright."""
+"""Scraper for random https://www.imdb.com title pages using Playwright."""
 
 from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 from playwright.sync_api import BrowserContext, Page, sync_playwright
 
 from src.database.database_connection import insert_movie, insert_reviews
 from src.settings import custom_logger
+from src.settings.constants import IMDB_AMAZON_LOGIN_URL
 from src.structs.movie import Movie
 from src.structs.review import Review
-
-_IMDB_ID_RE = re.compile(r"/(tt\d+)")
-
-
-def _extract_imdb_id(url: str) -> str | None:
-    m = _IMDB_ID_RE.search(url)
-    return m.group(1) if m else None
-
-
-def _parse_votes(text: str | None) -> int | None:
-    if not text:
-        return None
-    cleaned = re.sub(r"[^\d]", "", text)
-    return int(cleaned) if cleaned else None
-
 
 def _parse_runtime(text: str | None) -> int | None:
     """Convert 'PT142M' (ISO 8601 duration) or '2h 22m' to total minutes."""
@@ -52,20 +40,22 @@ class IMDBScraper:
     def __init__(
         self,
         base_url: str,
-        top_list_url: str,
         max_movies: int,
         max_reviews_per_movie: int,
         output_dir: str,
+        random_title_start: int = 1,
+        random_title_end: int = 2_488_998,
         session_state_path: str = "",
         imdb_email: str = "",
         imdb_password: str = "",
         log_level: int = 20,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.top_list_url = top_list_url
         self.max_movies = max_movies
         self.max_reviews_per_movie = max_reviews_per_movie
         self.output_dir = output_dir
+        self.random_title_start = random_title_start
+        self.random_title_end = random_title_end
         self.session_state_path = session_state_path
         self.imdb_email = imdb_email
         self.imdb_password = imdb_password
@@ -83,8 +73,9 @@ class IMDBScraper:
 
     def run(self) -> None:
         self.logger.info(
-            "Starting IMDB scraper — top list: %s, max movies: %d, max reviews: %d",
-            self.top_list_url,
+            "Starting IMDB scraper — random title IDs: tt%07d-tt%07d, max movies: %d, max reviews: %d",
+            self.random_title_start,
+            self.random_title_end,
             self.max_movies,
             self.max_reviews_per_movie,
         )
@@ -101,6 +92,7 @@ class IMDBScraper:
                 locale="en-US",
                 storage_state=saved_state,
             )
+            self._context = context
             page = context.new_page()
 
             # Login if credentials are provided
@@ -116,8 +108,8 @@ class IMDBScraper:
                             "IMDB login failed — reviews will be limited to featured only"
                         )
 
-            movie_ids = self._scrape_top_list(page)
-            self.logger.info("Found %d movie IDs in Top 250 list", len(movie_ids))
+            movie_ids = self._generate_random_title_ids()
+            self.logger.info("Generated %d random movie IDs", len(movie_ids))
 
             for i, imdb_id in enumerate(movie_ids[: self.max_movies], start=1):
                 self.logger.info("Processing movie %d/%d: %s", i, self.max_movies, imdb_id)
@@ -145,6 +137,36 @@ class IMDBScraper:
             browser.close()
         self.logger.info("Scraping complete.")
 
+    def manual_login(self) -> None:
+        """Open a visible browser so a human can complete login and save session state."""
+        if not self.session_state_path:
+            raise ValueError("SessionStatePath is required for manual login")
+
+        self.logger.info("Opening visible browser for manual IMDB login")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            context = browser.new_context(user_agent=self._UA, locale="en-US")
+            page = context.new_page()
+            page.goto(IMDB_AMAZON_LOGIN_URL, wait_until="domcontentloaded")
+
+            print(
+                "\nComplete the IMDB/Amazon login in the browser, including any pulse, "
+                "captcha, or MFA step. When you are logged in and back on IMDB, "
+                "press Enter here to save the session.\n"
+            )
+            input("Press Enter after login is complete...")
+
+            if self._is_session_valid(page):
+                context.storage_state(path=self.session_state_path)
+                self.logger.info("Session saved to %s", self.session_state_path)
+            else:
+                self.logger.error(
+                    "Session was not valid after manual login; not saving %s",
+                    self.session_state_path,
+                )
+
+            browser.close()
+
     # ------------------------------------------------------------------
     # Authentication
     # ------------------------------------------------------------------
@@ -157,36 +179,76 @@ class IMDBScraper:
     def _login(self, page: Page, context: BrowserContext) -> bool:
         """Log in to IMDB via Amazon auth. Returns True on success."""
         self.logger.info("Logging in to IMDB as %s", self.imdb_email)
-        login_url = (
-            f"{self.base_url}/ap/signin"
-            "?openid.return_to=https%3A%2F%2Fwww.imdb.com%2F"
-            "&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select"
-            "&openid.assoc_handle=imdb_us"
-            "&openid.mode=checkid_setup"
-            "&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select"
-            "&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0"
-        )
         try:
-            page.goto(login_url, wait_until="domcontentloaded")
+            self.logger.info("Navigating to login URL: %s", IMDB_AMAZON_LOGIN_URL)
+            page.goto(IMDB_AMAZON_LOGIN_URL, wait_until="domcontentloaded")
+            return self._complete_amazon_login(page, context)
+        except Exception as e:
+            self.logger.error("Login error: %s", e)
+            return False
 
-            # Email field
-            page.wait_for_selector("input#ap_email", timeout=10000)
-            page.fill("input#ap_email", self.imdb_email)
+    def _complete_amazon_login(self, page: Page, context: BrowserContext) -> bool:
+        """Fill the Amazon auth form and persist the resulting IMDb session."""
+        try:
+            email_input = page.locator(
+                "input#ap_email, input[name='email'], input[type='email']"
+            ).first
+            password_input = page.locator(
+                "input#ap_password, input[name='password'], input[type='password']"
+            ).first
 
-            # Some flows show a separate "Continue" button before the password field
-            continue_btn = page.locator("input#continue").first
-            if continue_btn.count():
-                continue_btn.click()
+            if not email_input.count() and not password_input.count():
+                self.logger.error(
+                    "Login form not found at %s; page title: %s",
+                    page.url,
+                    page.title(),
+                )
+                return False
 
-            # Password field
-            page.wait_for_selector("input#ap_password", timeout=8000)
-            page.fill("input#ap_password", self.imdb_password)
-            page.click("input#signInSubmit")
+            if email_input.count():
+                email_input.fill(self.imdb_email)
+
+                # Some flows show a separate "Continue" button before the password field
+                continue_btn = page.locator(
+                    "input#continue, button#continue, input[aria-labelledby='continue-announce']"
+                ).first
+                if continue_btn.count():
+                    continue_btn.click()
+                    page.wait_for_load_state("domcontentloaded")
+
+            try:
+                page.wait_for_selector(
+                    "input#ap_password, input[name='password'], input[type='password']",
+                    timeout=15000,
+                )
+            except Exception:
+                error_text = page.locator(
+                    "#auth-error-message-box, .a-alert-error, #authportal-main-section"
+                ).first
+                message = error_text.inner_text().strip() if error_text.count() else ""
+                self.logger.error(
+                    "Password field not found at %s; page title: %s%s",
+                    page.url,
+                    page.title(),
+                    f"; page message: {message}" if message else "",
+                )
+                return False
+
+            password_input = page.locator(
+                "input#ap_password, input[name='password'], input[type='password']"
+            ).first
+            password_input.fill(self.imdb_password)
+
+            submit = page.locator("input#signInSubmit, button#signInSubmit").first
+            if submit.count():
+                submit.click()
+            else:
+                password_input.press("Enter")
 
             # Wait for redirect back to IMDB (not Amazon)
             page.wait_for_url("**/imdb.com/**", timeout=15000)
 
-            if "/ap/signin" in page.url or "/ap/mfa" in page.url:
+            if "amazon.com/ap/signin" in page.url or "/ap/mfa" in page.url:
                 self.logger.error(
                     "Login redirect landed on %s — check credentials or disable 2FA", page.url
                 )
@@ -203,27 +265,57 @@ class IMDBScraper:
             self.logger.error("Login error: %s", e)
             return False
 
+    def _login_from_reviews_gate(self, page: Page) -> bool:
+        """Follow the IMDb reviews sign-in card to Amazon auth."""
+        context = getattr(self, "_context", None)
+        if not context:
+            self.logger.error("Cannot sign in from reviews page because browser context is unavailable")
+            return False
+
+        if not self.imdb_email or not self.imdb_password:
+            self.logger.warning(
+                "Reviews page requires login, but IMDB_EMAIL/IMDB_PASSWORD are not set"
+            )
+            return False
+
+        try:
+            self.logger.info("Reviews page is gated; signing in through IMDb")
+
+            sign_in = page.locator("[data-testid='reviews-sign-in-card-button']").first
+            if sign_in.count():
+                sign_in.click()
+                page.wait_for_load_state("domcontentloaded")
+
+            existing_account = page.get_by_text(
+                re.compile(r"sign in to an existing account", re.I)
+            ).first
+            if existing_account.count():
+                existing_account.click()
+                page.wait_for_load_state("domcontentloaded")
+
+            amazon = page.get_by_text(re.compile(r"sign in with amazon", re.I)).first
+            if amazon.count():
+                amazon.click()
+                page.wait_for_load_state("domcontentloaded")
+
+            return self._complete_amazon_login(page, context)
+        except Exception as e:
+            self.logger.error("Reviews sign-in flow failed: %s", e)
+            return False
+
     # ------------------------------------------------------------------
-    # Top-list scraping
+    # Random title ID generation
     # ------------------------------------------------------------------
 
-    def _scrape_top_list(self, page: Page) -> list[str]:
-        """Return ordered list of imdb_ids from the Top 250 chart."""
-        page.goto(self.top_list_url, wait_until="domcontentloaded")
-        page.wait_for_selector("a[href*='/title/tt']", timeout=15000)
+    def _generate_random_title_ids(self) -> list[str]:
+        """Return unique random imdb_ids between tt0000001 and tt2488998."""
+        start = self.random_title_start
+        end = self.random_title_end
+        if start > end:
+            raise ValueError("RandomTitleStart must be lower than or equal to RandomTitleEnd")
 
-        hrefs = page.eval_on_selector_all(
-            "a[href*='/title/tt']",
-            "els => els.map(e => e.getAttribute('href'))",
-        )
-        seen: set[str] = set()
-        ids: list[str] = []
-        for href in hrefs:
-            imdb_id = _extract_imdb_id(href or "")
-            if imdb_id and imdb_id not in seen:
-                seen.add(imdb_id)
-                ids.append(imdb_id)
-        return ids
+        count = min(self.max_movies, end - start + 1)
+        return [f"tt{number:07d}" for number in random.sample(range(start, end + 1), count)]
 
     # ------------------------------------------------------------------
     # Movie detail scraping
@@ -240,7 +332,11 @@ class IMDBScraper:
         if not title:
             # fallback to page title
             title_el = page.locator("h1[data-testid='hero__pageTitle'] span").first
-            title = title_el.inner_text() if title_el.count() else imdb_id
+            title = title_el.inner_text() if title_el.count() else None
+
+        if not title:
+            self.logger.warning("Skipping %s because no title was found", imdb_id)
+            return None
 
         year = self._parse_year(ld_json)
         imdb_rating = self._parse_rating(ld_json)
@@ -349,44 +445,57 @@ class IMDBScraper:
     ]
 
     def _scrape_reviews(self, page: Page, imdb_id: str) -> list[Review]:
-        if self._logged_in:
-            reviews = self._scrape_reviews_page(page, imdb_id)
-            if reviews:
-                return reviews
-            self.logger.warning("Reviews page returned nothing for %s — falling back to featured", imdb_id)
-
+        reviews = self._scrape_reviews_page(page, imdb_id)
+        if reviews:
+            return reviews
+        self.logger.warning("Reviews page returned nothing for %s — falling back to featured", imdb_id)
         return self._scrape_featured_reviews(page, imdb_id)
 
     def _scrape_reviews_page(self, page: Page, imdb_id: str) -> list[Review]:
-        """Scrape the full /reviews/ listing page (requires login)."""
-        url = f"{self.base_url}/title/{imdb_id}/reviews/"
+        """Scrape the full /reviews/ listing page."""
+        url = self._get_user_reviews_url(page, imdb_id)
         page.goto(url, wait_until="domcontentloaded")
 
-        reviews: list[Review] = []
-        collected = 0
+        # Redirected to login — not accessible without credentials
+        if "/ap/signin" in page.url:
+            self.logger.warning("Reviews page requires login for %s", imdb_id)
+            return []
 
-        while collected < self.max_reviews_per_movie:
+        if page.locator("section[data-testid='reviews-sign-in-card']").count():
+            if not self._login_from_reviews_gate(page):
+                return []
+            page.goto(url, wait_until="domcontentloaded")
+
+        reviews: list[Review] = []
+        processed = 0  # number of cards already parsed this session
+
+        while len(reviews) < self.max_reviews_per_movie:
             cards: list = []
             for selector in self._REVIEWS_PAGE_SELECTORS:
                 cards = page.locator(selector).all()
                 if cards:
                     break
 
-            if not cards:
+            # No new cards appeared after the last load-more click
+            if not cards or len(cards) <= processed:
                 break
 
-            for card in cards:
-                if collected >= self.max_reviews_per_movie:
+            for card in cards[processed:]:
+                if len(reviews) >= self.max_reviews_per_movie:
                     break
                 review = self._parse_review_card(card, imdb_id)
                 if review:
                     reviews.append(review)
-                    collected += 1
+
+            processed = len(cards)
+
+            if len(reviews) >= self.max_reviews_per_movie:
+                break
 
             load_more = page.locator(
                 "button[data-testid='load-more-btn'], button.ipl-load-more__button"
             ).first
-            if load_more.count() and collected < self.max_reviews_per_movie:
+            if load_more.count():
                 load_more.click()
                 time.sleep(1.5)
             else:
@@ -394,11 +503,42 @@ class IMDBScraper:
 
         return reviews
 
+    def _get_user_reviews_url(self, page: Page, imdb_id: str) -> str:
+        """Read the User reviews URL from the title page header."""
+        title_url = f"{self.base_url}/title/{imdb_id}/"
+        if page.url.rstrip("/") != title_url.rstrip("/"):
+            page.goto(title_url, wait_until="domcontentloaded")
+
+        link = page.locator(
+            "section[data-testid='UserReviews'] "
+            ".ipc-title__wrapper a[href*='/reviews/']"
+        ).first
+        if not link.count():
+            self.logger.warning(
+                "No User reviews header link found for %s; using default reviews URL",
+                imdb_id,
+            )
+            return f"{self.base_url}/title/{imdb_id}/reviews/"
+
+        href = link.get_attribute("href") or f"/title/{imdb_id}/reviews/"
+
+        count_el = page.locator(
+            "section[data-testid='UserReviews'] .ipc-title__subtext"
+        ).first
+        if count_el.count():
+            self.logger.info(
+                "User reviews header for %s reports %s reviews",
+                imdb_id,
+                count_el.inner_text().strip(),
+            )
+
+        return urljoin(self.base_url, href)
+
     def _scrape_featured_reviews(self, page: Page, imdb_id: str) -> list[Review]:
         """Extract Featured reviews from the already-loaded main movie page."""
-        # Navigate back to the main movie page if we left it
-        if f"/title/{imdb_id}" not in page.url:
-            page.goto(f"{self.base_url}/title/{imdb_id}/", wait_until="domcontentloaded")
+        # The full reviews URL also contains /title/{imdb_id}, so navigate
+        # explicitly to the main title page before reading Featured reviews.
+        page.goto(f"{self.base_url}/title/{imdb_id}/", wait_until="domcontentloaded")
 
         try:
             page.wait_for_selector("section[data-testid='UserReviews']", timeout=8000)
@@ -406,7 +546,9 @@ class IMDBScraper:
             self.logger.warning("No UserReviews section found for %s", imdb_id)
             return []
 
-        cards = page.locator("div[data-testid='shoveler-items-container'] > div").all()
+        cards = page.locator(
+            "section[data-testid='UserReviews'] div[data-testid='shoveler-items-container'] > div"
+        ).all()
         if not cards:
             self.logger.warning("No featured review cards found for %s", imdb_id)
             return []

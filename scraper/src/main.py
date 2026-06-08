@@ -19,22 +19,30 @@ if __name__ == "__main__":
         default="IMDBScraper",
         help='Scraper to run (default: "IMDBScraper")',
     )
+    parser.add_argument(
+        "--login-only",
+        action="store_true",
+        help="Open a visible browser to manually log in and save the IMDB session",
+    )
     args = parser.parse_args()
-
-    create_tables()
 
     settings = load_settings(key="IMDBScraper")
 
     scraper = IMDBScraper(
         base_url=settings["BaseUrl"],
-        top_list_url=settings["TopListUrl"],
         max_movies=settings["MaxMovies"],
         max_reviews_per_movie=settings["MaxReviewsPerMovie"],
         output_dir=settings["OutputDir"],
+        random_title_start=settings["RandomTitleStart"],
+        random_title_end=settings["RandomTitleEnd"],
         session_state_path=settings["SessionStatePath"],
         imdb_email=os.environ.get("IMDB_EMAIL", ""),
         imdb_password=os.environ.get("IMDB_PASSWORD", ""),
         log_level=settings["LogLevel"],
     )
 
-    scraper.run()
+    if args.login_only:
+        scraper.manual_login()
+    else:
+        create_tables()
+        scraper.run()

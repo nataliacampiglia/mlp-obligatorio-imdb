@@ -1,9 +1,10 @@
 IMDBScraper:
   BaseUrl: https://www.imdb.com
-  TopListUrl: https://www.imdb.com/chart/top/
+  RandomTitleStart: 1
+  RandomTitleEnd: 2488998
   # 250
   MaxMovies: 20
-  MaxReviewsPerMovie: 25
+  MaxReviewsPerMovie: 20
   DBPath: src/database/imdb.db
   OutputDir: data/movies
   SessionStatePath: data/session.json
