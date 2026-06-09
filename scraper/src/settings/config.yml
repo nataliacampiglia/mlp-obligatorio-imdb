@@ -9,3 +9,5 @@ IMDBScraper:
   OutputDir: data/movies
   SessionStatePath: data/session.json
   LogLevel: 20
+  S3Bucket: "mlp-imdb-data"
+  S3Prefix: "imdb"
