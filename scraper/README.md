@@ -8,6 +8,7 @@ IMDB data scraper for a movie rating prediction ML project (obligatorio MLP).
 - **Reviews**: reviewer name, score (1–10), review text, helpful votes — up to 25 reviews per movie
 
 Data is stored in both **SQLite** (`src/database/imdb.db`) and **JSONL** files (`data/movies/`).
+When `S3Bucket` is configured, the scraped movies and reviews are also uploaded to S3 as Parquet files.
 
 ## Setup
 
@@ -21,6 +22,34 @@ Or from the project root using Make:
 ```bash
 make scraper-install
 ```
+
+## AWS credentials for S3 upload
+
+The scraper uses `boto3` to upload Parquet files to S3. `boto3` reads AWS credentials automatically from your local AWS credentials file, so no credentials should be added to the code.
+
+If you are using AWS Learner Lab, the credentials expire every time the lab session restarts. After each restart:
+
+1. Open **AWS Details** in the lab console.
+2. Copy the values from **AWS CLI**.
+3. Create or edit the local credentials file:
+
+```bash
+mkdir -p ~/.aws
+nano ~/.aws/credentials
+```
+
+Paste the values using this format:
+
+```ini
+[default]
+aws_access_key_id=ASIA...
+aws_secret_access_key=...
+aws_session_token=...
+```
+
+Save and close the file. In `nano`, use `Ctrl + O`, `Enter`, and `Ctrl + X`.
+
+Do not commit AWS credentials to the repository.
 
 ## Login for full reviews
 
@@ -79,6 +108,8 @@ Edit `src/settings/config.yml` to adjust:
 | `MaxReviewsPerMovie` | 20 | Reviews to collect per movie |
 | `DBPath` | `src/database/imdb.db` | SQLite database path |
 | `OutputDir` | `data/movies` | JSONL output directory |
+| `S3Bucket` | `mlp-imdb-data` | S3 bucket used for Parquet uploads |
+| `S3Prefix` | `imdb` | Prefix inside the S3 bucket |
 
 ## Verify the data
 
