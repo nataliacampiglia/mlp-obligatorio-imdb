@@ -323,6 +323,10 @@ class IMDBScraper:
     # ------------------------------------------------------------------
 
     def _upload_to_s3(self, movies: list[dict], reviews: list[dict]) -> None:
+        if not movies:
+            self.logger.warning("Nada que subir a S3 — el scraper no guardó ninguna película")
+            return
+
         from datetime import date
         from src.storage.s3 import upload_parquet
 

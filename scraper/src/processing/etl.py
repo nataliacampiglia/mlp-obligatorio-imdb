@@ -34,6 +34,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+from tabulate import tabulate
 
 # agregamos el root del proyecto al path para poder importar src.*
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +43,19 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.settings.settings import load_settings
 from src.storage.s3 import upload_dataframe
+
+# columnas de texto largo que truncamos para que la tabla entre en el terminal
+_COLS_TRUNCAR = {"plot", "review_text", "review_title", "reviewer_name", "title"}
+_MAX_ANCHO_CELDA = 40
+
+
+def _tabla(df: pd.DataFrame, n: int = 10) -> str:
+    """Devuelve las primeras n filas formateadas como tabla legible en el terminal."""
+    vista = df.head(n).copy()
+    for col in vista.columns:
+        if col in _COLS_TRUNCAR or vista[col].dtype == object:
+            vista[col] = vista[col].astype(str).str[:_MAX_ANCHO_CELDA]
+    return tabulate(vista, headers="keys", tablefmt="rounded_outline", showindex=False)
 
 
 def build_dataset(bucket: str, prefix: str) -> pd.DataFrame:
@@ -58,6 +72,14 @@ def build_dataset(bucket: str, prefix: str) -> pd.DataFrame:
     df_reviews = pd.read_parquet(f"{base}/reviews/")
 
     print(f"Filas crudas  — películas: {len(df_movies):,} | reviews: {len(df_reviews):,}")
+
+    # mostramos las primeras 10 películas crudas para verificar que los datos llegaron bien
+    print("\n--- primeras 10 películas (raw) ---")
+    print(_tabla(df_movies[["imdb_id", "title", "imdb_rating"]]))
+
+    # mostramos las primeras 10 reviews crudas
+    print("\n--- primeras 10 reviews (raw) ---")
+    print(_tabla(df_reviews[["movie_imdb_id", "reviewer_name", "rating"]]))
 
     # si no hay datos todavía, salimos con un mensaje claro en vez de crashear
     if df_movies.empty:
@@ -154,6 +176,10 @@ def build_dataset(bucket: str, prefix: str) -> pd.DataFrame:
     # --------------------------------------------------------------------- #
     print(f"\nDataset final: {df.shape[0]:,} películas × {df.shape[1]} columnas")
     print(f"Columnas: {list(df.columns)}")
+
+    # mostramos las primeras 10 filas del dataset ya procesado
+    print("\n--- primeras 10 filas del dataset procesado (listo para entrenar) ---")
+    print(_tabla(df[["imdb_id", "imdb_rating"]]))
     nulos = df.isnull().sum()
     nulos = nulos[nulos > 0]
     if len(nulos):

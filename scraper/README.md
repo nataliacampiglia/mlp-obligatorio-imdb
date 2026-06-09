@@ -111,6 +111,83 @@ Edit `src/settings/config.yml` to adjust:
 | `S3Bucket` | `mlp-imdb-data` | S3 bucket used for Parquet uploads |
 | `S3Prefix` | `imdb` | Prefix inside the S3 bucket |
 
+## ETL — preparar el dataset para entrenar el modelo
+
+El ETL lee los archivos Parquet crudos que el scraper subió a S3, los transforma en un dataset plano y listo para entrenar, y sube el resultado de vuelta a S3.
+
+### Qué hace paso a paso
+
+| Paso | Qué hace |
+|---|---|
+| **Extract** | Lee todas las particiones de `movies/` y `reviews/` desde S3 |
+| **Transform 1** | Deduplica películas si el scraper corrió más de una vez (se queda con la versión más reciente) |
+| **Transform 2** | Agrega las reviews por película: `num_reviews`, `avg_review_rating`, `avg_helpful_votes` |
+| **Transform 3** | Codifica géneros como multi-hot (`genre_action`, `genre_drama`, etc.) |
+| **Transform 4** | Codifica el certificado de contenido como one-hot (`cert_pg`, `cert_r`, etc.) |
+| **Transform 5** | Elimina columnas que no sirven como features (`title`, `plot`, `votes`, `directors`, `main_cast`) |
+| **Transform 6** | Elimina filas sin `imdb_rating` (el target que queremos predecir) |
+| **Load** | Sube el dataset procesado a `s3://{S3Bucket}/{S3Prefix}/processed/training_dataset.parquet` |
+
+### Columnas del dataset final
+
+| Columna | Tipo | Descripción |
+|---|---|---|
+| `imdb_id` | string | Identificador de la película — **no usar como feature** |
+| `year` | int | Año de estreno |
+| `runtime_min` | int | Duración en minutos |
+| `metascore` | int | Puntuación de críticos (Metacritic) |
+| `genre_{*}` | 0 / 1 | Un columna binaria por género (Action, Drama, etc.) |
+| `cert_{*}` | 0 / 1 | Una columna binaria por clasificación (PG, R, PG-13, etc.) |
+| `num_reviews` | int | Cantidad de reviews scrapeadas |
+| `avg_review_rating` | float | Promedio del rating dado por los usuarios en sus reviews |
+| `avg_helpful_votes` | float | Promedio de votos "útiles" por review |
+| `imdb_rating` | float | **Target** — rating de IMDB (1–10) |
+
+### Por qué se excluyen algunas columnas
+
+| Columna | Motivo |
+|---|---|
+| `votes` | Correlaciona directamente con el target y no estaría disponible al predecir |
+| `title`, `plot` | Texto libre — requiere embeddings; se puede agregar en un paso separado |
+| `directors`, `main_cast` | Listas de strings complejas de codificar; se pueden agregar después |
+
+### Cómo correrlo
+
+Primero asegurate de tener datos en S3 (correr el scraper al menos una vez con éxito).
+
+```bash
+cd scraper
+poetry run python -m src.processing.etl
+```
+
+El output muestra un preview de los datos en cada etapa y termina con:
+
+```
+Dataset subido → s3://mlp-imdb-data/imdb/processed/training_dataset.parquet
+```
+
+### Cómo usar el dataset en un notebook
+
+```python
+import pandas as pd
+
+df = pd.read_parquet("s3://mlp-imdb-data/imdb/processed/training_dataset.parquet")
+
+X = df.drop(columns=["imdb_id", "imdb_rating"])
+y = df["imdb_rating"]
+```
+
+### Estructura de S3 después de correr el scraper y el ETL
+
+```
+s3://mlp-imdb-data/
+  imdb/
+    movies/scraped_date=YYYY-MM-DD/data.parquet    ← datos crudos del scraper
+    reviews/scraped_date=YYYY-MM-DD/data.parquet   ← datos crudos del scraper
+    processed/
+      training_dataset.parquet                     ← dataset listo para entrenar
+```
+
 ## Verify the data
 
 ```bash
