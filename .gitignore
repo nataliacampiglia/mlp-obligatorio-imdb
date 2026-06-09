@@ -36,3 +36,11 @@ credentials
 .DS_Store
 .env
 *.log
+
+# Scraper
+scraper/data/
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
