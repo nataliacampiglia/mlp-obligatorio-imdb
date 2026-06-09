@@ -32,6 +32,8 @@ class IMDBScraper:
         imdb_email: str = "",
         imdb_password: str = "",
         log_level: int = 20,
+        s3_bucket: str = "",
+        s3_prefix: str = "imdb",
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.max_movies = max_movies
@@ -39,6 +41,8 @@ class IMDBScraper:
         self.output_dir = output_dir
         self.random_title_start = random_title_start
         self.random_title_end = random_title_end
+        self.s3_bucket = s3_bucket
+        self.s3_prefix = s3_prefix
         self.logger = custom_logger(self.__class__.__name__, log_level)
 
         self._auth = IMDBAuth(
@@ -107,6 +111,9 @@ class IMDBScraper:
             movie_ids = self._generate_random_title_ids()
             self.logger.info("Generated %d random movie IDs", len(movie_ids))
 
+            saved_movies: list[dict] = []
+            saved_reviews: list[dict] = []
+
             for i, imdb_id in enumerate(movie_ids[: self.max_movies], start=1):
                 self.logger.info("Processing movie %d/%d: %s", i, self.max_movies, imdb_id)
                 try:
@@ -114,6 +121,7 @@ class IMDBScraper:
                     if not movie:
                         continue
                     self._save_movie(movie)
+                    saved_movies.append(movie.model_dump())
                 except Exception as e:
                     self.logger.error("Failed to scrape movie %s: %s", imdb_id, e)
                     continue
@@ -122,6 +130,7 @@ class IMDBScraper:
                     reviews = self._scrape_reviews(page, imdb_id)
                     insert_reviews(reviews)
                     self._save_reviews(reviews)
+                    saved_reviews.extend(r.model_dump() for r in reviews)
                     self.logger.info(
                         "Saved movie %s with %d reviews", imdb_id, len(reviews)
                     )
@@ -129,6 +138,9 @@ class IMDBScraper:
                     self.logger.error("Failed to scrape reviews for %s: %s", imdb_id, e)
 
                 time.sleep(1.5)
+
+            if self.s3_bucket:
+                self._upload_to_s3(saved_movies, saved_reviews)
 
             browser.close()
         self.logger.info("Scraping complete.")
@@ -305,6 +317,33 @@ class IMDBScraper:
             if review:
                 reviews.append(review)
         return reviews
+
+    # ------------------------------------------------------------------
+    # S3 upload
+    # ------------------------------------------------------------------
+
+    def _upload_to_s3(self, movies: list[dict], reviews: list[dict]) -> None:
+        from datetime import date
+        from src.storage.s3 import upload_parquet
+
+        today = date.today().isoformat()
+        try:
+            upload_parquet(
+                movies,
+                self.s3_bucket,
+                f"{self.s3_prefix}/movies/scraped_date={today}/data.parquet",
+            )
+            upload_parquet(
+                reviews,
+                self.s3_bucket,
+                f"{self.s3_prefix}/reviews/scraped_date={today}/data.parquet",
+            )
+            self.logger.info(
+                "Uploaded %d movies and %d reviews to s3://%s/%s",
+                len(movies), len(reviews), self.s3_bucket, self.s3_prefix,
+            )
+        except Exception as e:
+            self.logger.error("S3 upload failed (credentials expired?): %s", e)
 
     # ------------------------------------------------------------------
     # Persistence
