@@ -36,8 +36,9 @@ etl-run:
 
 # ─── pipeline completo ────────────────────────────────────────────────────────
 
-# Corre todo en orden: credenciales → scraper → etl
+# Corre todo en orden: credenciales → login IMDB → scraper → etl
 # Uso:
 #   1. Copiá el bloque de credenciales del Learner Lab
 #   2. Corré: make pipeline
-pipeline: aws-credentials scraper-run etl-run
+#   3. Completá el login en el navegador y presioná Enter cuando estés logueado
+pipeline: aws-credentials scraper-login scraper-run etl-run
