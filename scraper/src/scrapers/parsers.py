@@ -53,7 +53,7 @@ def parse_rating(ld: dict[str, Any]) -> float | None:
     agg = ld.get("aggregateRating") or {}
     val = agg.get("ratingValue")
     try:
-        return float(val)
+        return normalize_rating(float(val))
     except (TypeError, ValueError):
         return None
 
@@ -105,6 +105,27 @@ def parse_metascore(page: Page) -> int | None:
     return None
 
 
+def parse_count(text: str | None) -> int | None:
+    if not text:
+        return None
+
+    cleaned = text.strip().replace(",", "")
+    m = re.search(r"(\d+(?:\.\d+)?)\s*([KkMm])?", cleaned)
+    if not m:
+        return None
+
+    value = float(m.group(1))
+    suffix = (m.group(2) or "").lower()
+    multiplier = {"k": 1_000, "m": 1_000_000}.get(suffix, 1)
+    return int(value * multiplier)
+
+
+def normalize_rating(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(value / 10, 4)
+
+
 def build_movie(imdb_id: str, page: Page, ld: dict[str, Any]) -> Movie | None:
     """Assemble a Movie from a loaded title page and its JSON-LD blob."""
     title = ld_str(ld, "name")
@@ -138,24 +159,44 @@ def parse_review_card(card: Any, imdb_id: str) -> Review | None:
         if not review_text:
             return None
 
-        rating: int | None = None
-        rating_el = card.locator("span.ipc-rating-star[aria-label^='Author rating']").first
+        rating: float | None = None
+        raw_rating: int | None = None
+        rating_label: str | None = None
+        rating_el = card.locator("span.ipc-rating-star[aria-label*='rating']").first
         if rating_el.count():
-            label = rating_el.get_attribute("aria-label") or ""
-            m = re.search(r"(\d+)", label)
+            rating_label = rating_el.get_attribute("aria-label") or ""
+            m = re.search(r"rating:\s*(\d+)", rating_label, flags=re.IGNORECASE)
             if m:
-                rating = int(m.group(1))
+                raw_rating = int(m.group(1))
+            else:
+                rating_text_el = rating_el.locator(".ipc-rating-star--rating").first
+                rating_text = rating_text_el.inner_text().strip() if rating_text_el.count() else ""
+                raw_rating = parse_count(rating_text)
+            rating = normalize_rating(raw_rating)
 
         reviewer_name: str | None = None
         name_el = card.locator("a[aria-label^='User ']").first
         if name_el.count():
             label = name_el.get_attribute("aria-label") or ""
             reviewer_name = label.removeprefix("User ").strip() or None
+        elif rating_label:
+            m = re.search(r"(.+?)'s rating:", rating_label)
+            if m:
+                reviewer_name = m.group(1).strip() or None
 
         review_title: str | None = None
-        title_el = card.locator("h3.ipc-title__text").first
+        title_el = card.locator(
+            "[data-testid='review-summary'] .ipc-title__text, "
+            "h3.ipc-title__text, "
+            "h4.ipc-title__text"
+        ).first
         if title_el.count():
             review_title = title_el.inner_text().strip() or None
+
+        helpful_votes: int | None = None
+        helpful_el = card.locator(".ipc-voting__label__count--up").first
+        if helpful_el.count():
+            helpful_votes = parse_count(helpful_el.inner_text())
 
         return Review(
             movie_imdb_id=imdb_id,
@@ -163,7 +204,7 @@ def parse_review_card(card: Any, imdb_id: str) -> Review | None:
             rating=rating,
             review_title=review_title,
             review_text=review_text,
-            helpful_votes=None,
+            helpful_votes=helpful_votes,
         )
     except Exception:
         return None

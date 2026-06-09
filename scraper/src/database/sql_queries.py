@@ -21,7 +21,7 @@ CREATE_REVIEWS_TABLE = """
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
         movie_imdb_id  TEXT    NOT NULL,
         reviewer_name  TEXT,
-        rating         INTEGER,
+        rating         REAL,
         review_title   TEXT,
         review_text    TEXT    NOT NULL,
         helpful_votes  INTEGER
