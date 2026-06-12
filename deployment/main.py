@@ -1,4 +1,5 @@
 import os
+import json
 import boto3
 import wandb
 from botocore.exceptions import BotoCoreError, ClientError
@@ -6,9 +7,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-WANDB_PROJECT   = "food-inflation-forecasting"
-WANDB_ARTIFACT  = "food-inflation-model"
+WANDB_ENTITY    = "mlprod-obli"
+WANDB_PROJECT   = "imdb-rating"
+WANDB_ARTIFACT  = "imdb-rating-model"
 WANDB_ALIAS     = "production"
+
+S3_BUCKET       = "imdb-test-bucket-2026"
+S3_KEY          = os.getenv("S3_MOVIES_KEY", "peliculas_random.json")
 
 app = FastAPI(title="IMDB Rate Prediction")
 
@@ -45,16 +50,30 @@ def status():
     return {"status": "ok", "model": "not loaded"}
 
 
+@app.get("/movies")
+def list_movies():
+    try:
+        s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "us-east-1"))
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=S3_KEY)
+        data = json.loads(obj["Body"].read())
+        movies = data if isinstance(data, list) else data.get("movies", [])
+        return {"movies": movies}
+    except s3.exceptions.NoSuchKey:
+        raise HTTPException(status_code=404, detail=f"Archivo '{S3_KEY}' no encontrado en el bucket")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Error leyendo desde S3: {e}")
+
+
 @app.get("/model")
 def get_production_model():
     try:
-        entity, api_key = _get_wandb_credentials()
+        _, api_key = _get_wandb_credentials()
     except (BotoCoreError, ClientError) as e:
         raise HTTPException(status_code=503, detail=f"No se pudo leer credenciales de SSM: {e}")
 
     try:
         api = wandb.Api(api_key=api_key)
-        artifact = api.artifact(f"{entity}/{WANDB_PROJECT}/{WANDB_ARTIFACT}:{WANDB_ALIAS}")
+        artifact = api.artifact(f"{WANDB_ENTITY}/{WANDB_PROJECT}/{WANDB_ARTIFACT}:{WANDB_ALIAS}")
         return {
             "name": WANDB_ARTIFACT,
             "version": artifact.version,
