@@ -39,6 +39,8 @@ if __name__ == "__main__":
         imdb_email=os.environ.get("IMDB_EMAIL", ""),
         imdb_password=os.environ.get("IMDB_PASSWORD", ""),
         log_level=settings["LogLevel"],
+        s3_bucket=settings.get("S3Bucket", ""),
+        s3_prefix=settings.get("S3Prefix", "imdb"),
     )
 
     if args.login_only:
