@@ -59,7 +59,7 @@ def _load_model() -> None:
         _MODEL, _MODEL_VERSION = load_model_from_registry(
             project=WANDB_PROJECT,
             artifact_name=WANDB_ARTIFACT,
-            entity=entity,
+            entity=WANDB_ENTITY,
             alias=WANDB_ALIAS,
             api_key=api_key,
         )
@@ -123,4 +123,5 @@ def predict(payload: ReviewInput) -> PredictionOutput:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     prediction = int(_MODEL.predict([payload.model_dump()])[0])
+    print(f"Predicted rating {prediction} for review: {payload.review_text[:30]}...")
     return PredictionOutput(prediction=prediction, model_version=_MODEL_VERSION)
