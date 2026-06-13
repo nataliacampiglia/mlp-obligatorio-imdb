@@ -3,3 +3,5 @@ uvicorn[standard]
 pydantic
 boto3
 wandb
+scikit-learn
+joblib

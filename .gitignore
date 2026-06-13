@@ -32,6 +32,10 @@ credentials
 .ipynb_checkpoints/
 *.ipynb
 
+# W&B
+wandb/
+artifacts/
+
 # Misc
 .DS_Store
 .env
