@@ -327,24 +327,26 @@ class IMDBScraper:
             self.logger.warning("Nada que subir a S3 — el scraper no guardó ninguna película")
             return
 
-        from datetime import date
+        from datetime import datetime
         from src.storage.s3 import upload_parquet
 
-        today = date.today().isoformat()
+        now = datetime.now()
+        today = now.date().isoformat()
+        run_id = now.strftime("%Y%m%d_%H%M%S")
         try:
             upload_parquet(
                 movies,
                 self.s3_bucket,
-                f"{self.s3_prefix}/movies/scraped_date={today}/data.parquet",
+                f"{self.s3_prefix}/movies/scraped_date={today}/run_{run_id}.parquet",
             )
             upload_parquet(
                 reviews,
                 self.s3_bucket,
-                f"{self.s3_prefix}/reviews/scraped_date={today}/data.parquet",
+                f"{self.s3_prefix}/reviews/scraped_date={today}/run_{run_id}.parquet",
             )
             self.logger.info(
-                "Uploaded %d movies and %d reviews to s3://%s/%s",
-                len(movies), len(reviews), self.s3_bucket, self.s3_prefix,
+                "Uploaded %d movies and %d reviews to s3://%s/%s with run_id=%s",
+                len(movies), len(reviews), self.s3_bucket, self.s3_prefix, run_id,
             )
         except Exception as e:
             self.logger.error("S3 upload failed (credentials expired?): %s", e)
