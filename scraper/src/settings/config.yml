@@ -1,0 +1,13 @@
+IMDBScraper:
+  BaseUrl: https://www.imdb.com
+  RandomTitleStart: 1
+  RandomTitleEnd: 2488998
+  # 250
+  MaxMovies: 60
+  MaxReviewsPerMovie: 200
+  DBPath: src/database/imdb.db
+  OutputDir: data/movies
+  SessionStatePath: data/session.json
+  LogLevel: 20
+  S3Bucket: "mlp-imdb-data"
+  S3Prefix: "imdb"
