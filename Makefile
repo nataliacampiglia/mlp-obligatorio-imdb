@@ -34,6 +34,15 @@ scraper-run:
 etl-run:
 	cd $(SCRAPER_DIR) && poetry run python -m src.processing.etl
 
+
+# --- scrapper + etl ──────────────────────────────────────────────────────────
+
+# Corre todo en orden: scraper → etl
+# Uso:
+#   1. Corré: scraper-run
+#   2. Corré: etl-run
+scraper-etl: scraper-run etl-run
+
 # ─── pipeline completo ────────────────────────────────────────────────────────
 
 # Corre todo en orden: credenciales → login IMDB → scraper → etl
