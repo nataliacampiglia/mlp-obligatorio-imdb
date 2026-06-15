@@ -108,14 +108,20 @@ class IMDBScraper:
                             "IMDB login failed — reviews will be limited to featured only"
                         )
 
-            movie_ids = self._generate_random_title_ids()
-            self.logger.info("Generated %d random movie IDs", len(movie_ids))
-
             saved_movies: list[dict] = []
             saved_reviews: list[dict] = []
+            attempted_ids: set[str] = set()
+            total_available_ids = self.random_title_end - self.random_title_start + 1
 
-            for i, imdb_id in enumerate(movie_ids[: self.max_movies], start=1):
-                self.logger.info("Processing movie %d/%d: %s", i, self.max_movies, imdb_id)
+            while len(saved_movies) < self.max_movies and len(attempted_ids) < total_available_ids:
+                imdb_id = self._generate_random_title_id(attempted_ids)
+                attempted_ids.add(imdb_id)
+                self.logger.info(
+                    "Processing title %d/%d saved movies: %s",
+                    len(attempted_ids),
+                    self.max_movies,
+                    imdb_id,
+                )
                 try:
                     movie = self._scrape_movie(page, imdb_id)
                     if not movie:
@@ -138,6 +144,14 @@ class IMDBScraper:
                     self.logger.error("Failed to scrape reviews for %s: %s", imdb_id, e)
 
                 time.sleep(1.5)
+
+            if len(saved_movies) < self.max_movies:
+                self.logger.warning(
+                    "Only saved %d/%d movies after trying all %d configured title IDs",
+                    len(saved_movies),
+                    self.max_movies,
+                    total_available_ids,
+                )
 
             if self.s3_bucket:
                 self._upload_to_s3(saved_movies, saved_reviews)
@@ -191,6 +205,25 @@ class IMDBScraper:
         count = min(self.max_movies, end - start + 1)
         return [f"tt{number:07d}" for number in random.sample(range(start, end + 1), count)]
 
+    def _generate_random_title_id(self, excluded_ids: set[str]) -> str:
+        """Return one random imdb_id that has not been tried in this run."""
+        start = self.random_title_start
+        end = self.random_title_end
+        if start > end:
+            raise ValueError("RandomTitleStart must be lower than or equal to RandomTitleEnd")
+
+        for _ in range(100):
+            imdb_id = f"tt{random.randint(start, end):07d}"
+            if imdb_id not in excluded_ids:
+                return imdb_id
+
+        for number in range(start, end + 1):
+            imdb_id = f"tt{number:07d}"
+            if imdb_id not in excluded_ids:
+                return imdb_id
+
+        raise ValueError("No title IDs left to try in the configured range")
+
     # ------------------------------------------------------------------
     # Movie detail scraping
     # ------------------------------------------------------------------
@@ -198,6 +231,14 @@ class IMDBScraper:
     def _scrape_movie(self, page: Page, imdb_id: str) -> Movie | None:
         page.goto(f"{self.base_url}/title/{imdb_id}/", wait_until="domcontentloaded")
         ld = parsers.extract_json_ld(page)
+        title_type = parsers.parse_title_type(ld)
+        if title_type != "Movie":
+            self.logger.info(
+                "Skipping %s because title type is %s, not Movie",
+                imdb_id,
+                title_type or "unknown",
+            )
+            return None
         movie = parsers.build_movie(imdb_id, page, ld)
         if not movie:
             self.logger.warning("Skipping %s because no title was found", imdb_id)
