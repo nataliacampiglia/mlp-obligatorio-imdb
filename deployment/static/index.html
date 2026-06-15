@@ -1,93 +1,589 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>IMDB Rate Prediction</title>
+  <title>MovieRate AI</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0b0f1a;
+      --bg-card:   #131929;
+      --bg-input:  #1c2540;
+      --accent:    #f5a623;
+      --accent-h:  #e09410;
+      --green:     #22c55e;
+      --text:      #f1f5f9;
+      --muted:     #8896b3;
+      --border:    #1e2d4a;
+    }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #0f172a;
-      color: #e2e8f0;
+      background: var(--bg);
+      color: var(--text);
       min-height: 100vh;
+    }
+
+    /* ── NAV ── */
+    nav {
       display: flex;
-      flex-direction: column;
       align-items: center;
-      justify-content: center;
-      padding: 2rem;
+      justify-content: space-between;
+      padding: 1.2rem 3rem;
+      border-bottom: 1px solid var(--border);
     }
-    .card {
-      background: #1e293b;
-      border-radius: 12px;
-      padding: 2.5rem;
-      max-width: 520px;
-      width: 100%;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
-    }
-    h1 {
-      font-size: 1.6rem;
-      font-weight: 700;
-      margin-bottom: 0.4rem;
-      color: #f8fafc;
-    }
-    p.subtitle {
-      font-size: 0.9rem;
-      color: #94a3b8;
-      margin-bottom: 2rem;
-    }
-    .status-bar {
+    .nav-logo {
       display: flex;
       align-items: center;
       gap: 0.5rem;
+      font-size: 1.2rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .nav-logo span { color: var(--accent); }
+    .nav-logo svg { color: var(--accent); }
+    .nav-links { display: flex; gap: 2rem; list-style: none; }
+    .nav-links a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      transition: color .2s;
+    }
+    .nav-links a.active, .nav-links a:hover { color: var(--text); }
+    .nav-links a.active { border-bottom: 2px solid var(--accent); padding-bottom: 2px; }
+
+    /* ── HERO ── */
+    .hero {
+      text-align: center;
+      padding: 5rem 1.5rem 3rem;
+    }
+    .hero h1 {
+      font-size: clamp(2.4rem, 6vw, 3.8rem);
+      font-weight: 800;
+      line-height: 1.15;
+      margin-bottom: 1rem;
+    }
+    .hero h1 .yellow { color: var(--accent); }
+    .hero p {
+      color: var(--muted);
+      font-size: 1.05rem;
+      max-width: 440px;
+      margin: 0 auto 2.5rem;
+      line-height: 1.6;
+    }
+
+    /* ── SEARCH BOX ── */
+    .search-wrap {
+      max-width: 540px;
+      margin: 0 auto;
+    }
+    .search-box {
+      position: relative;
+      width: 100%;
+      margin-bottom: 0.5rem;
+    }
+    .search-box svg.icon-search {
+      position: absolute;
+      left: 1rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      pointer-events: none;
+      z-index: 1;
+    }
+    .search-box input {
+      width: 100%;
+      padding: 1rem 3rem 1rem 3rem;
+      border-radius: 999px;
+      border: none;
+      background: #eef2f7;
+      color: #1a1a2e;
+      font-size: 1rem;
+      outline: none;
+    }
+    .search-box input::placeholder { color: #8896b3; }
+    .search-box svg.icon-chevron {
+      position: absolute;
+      right: 1.1rem;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      pointer-events: none;
+    }
+
+    /* ── DROPDOWN ── */
+    .dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0; right: 0;
+      background: #1c2540;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      max-height: 240px;
+      overflow-y: auto;
+      z-index: 100;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    .dropdown.open { display: block; }
+    .dropdown-item {
+      padding: 0.75rem 1.2rem;
+      font-size: 0.9rem;
+      cursor: pointer;
+      color: var(--text);
+      transition: background .15s;
+    }
+    .dropdown-item:hover, .dropdown-item.active { background: #263557; }
+    .dropdown-item:first-child { border-radius: 14px 14px 0 0; }
+    .dropdown-item:last-child  { border-radius: 0 0 14px 14px; }
+    .dropdown-empty {
+      padding: 0.75rem 1.2rem;
       font-size: 0.85rem;
-      padding: 0.6rem 1rem;
-      border-radius: 8px;
-      background: #0f172a;
-      margin-bottom: 1.5rem;
+      color: var(--muted);
     }
-    .dot {
-      width: 10px;
-      height: 10px;
+
+    /* ── MODEL LABEL ── */
+    .model-label {
+      text-align: center;
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-bottom: 1.4rem;
+      min-height: 1.2em;
+    }
+    .model-label .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      background: #14532d33;
+      color: var(--green);
+      border: 1px solid #14532d88;
+      border-radius: 999px;
+      padding: 0.2rem 0.7rem;
+      font-size: 0.76rem;
+    }
+    .model-label .dot {
+      width: 7px; height: 7px;
       border-radius: 50%;
-      background: #64748b;
+      background: var(--green);
     }
-    .dot.ok { background: #22c55e; }
-    .dot.error { background: #ef4444; }
-    .status-text { color: #94a3b8; }
+
+    /* ── PREDICT BUTTON ── */
+    .btn-predict {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      width: 100%;
+      max-width: 540px;
+      margin: 0 auto 0.8rem;
+      padding: 1rem;
+      background: var(--accent);
+      color: #1a1a2e;
+      font-size: 1.05rem;
+      font-weight: 700;
+      border: none;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    .btn-predict:hover { background: var(--accent-h); }
+
+    .powered {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-bottom: 3rem;
+    }
+
+    /* ── RESULT CARD ── */
+    .result-section {
+      max-width: 860px;
+      margin: 0 auto 4rem;
+      padding: 0 1.5rem;
+      display: none;
+    }
+    .result-section.visible { display: block; }
+    .result-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 2rem;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 2rem;
+    }
+    .rating-box { text-align: left; }
+    .rating-box .label { color: var(--green); font-weight: 600; margin-bottom: 0.75rem; }
+    .rating-value {
+      display: flex;
+      align-items: baseline;
+      gap: 0.3rem;
+      font-size: 3.5rem;
+      font-weight: 800;
+    }
+    .rating-value .star { font-size: 2.5rem; }
+    .rating-value .out { font-size: 1.2rem; color: var(--muted); }
+    .confidence {
+      display: inline-block;
+      margin-top: 0.8rem;
+      background: #14532d;
+      color: var(--green);
+      border-radius: 6px;
+      padding: 0.25rem 0.75rem;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+    .movie-details { border-left: 1px solid var(--border); padding-left: 2rem; }
+    .movie-details table { border-collapse: collapse; width: 100%; }
+    .movie-details td {
+      padding: 0.45rem 0.5rem;
+      font-size: 0.9rem;
+      vertical-align: top;
+    }
+    .movie-details td:first-child { color: var(--muted); white-space: nowrap; padding-right: 1.2rem; }
+    .about-box {
+      background: #0f1826;
+      border-radius: 12px;
+      padding: 1.2rem 1.4rem;
+      min-width: 200px;
+    }
+    .about-box h4 { font-size: 0.9rem; margin-bottom: 1rem; }
+    .about-box ul { list-style: none; display: flex; flex-direction: column; gap: 0.6rem; }
+    .about-box li {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+    .about-box li span { font-size: 1rem; }
+
+    /* ── FEATURES ── */
+    .features {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1.5rem;
+      max-width: 860px;
+      margin: 0 auto 3rem;
+      padding: 0 1.5rem;
+    }
+    .feature {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.9rem;
+    }
+    .feature-icon {
+      width: 44px; height: 44px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.3rem;
+      flex-shrink: 0;
+    }
+    .feature-icon.purple { background: #4c1d95; }
+    .feature-icon.blue   { background: #1e3a5f; }
+    .feature-icon.green  { background: #14532d; }
+    .feature-icon.amber  { background: #78350f; }
+    .feature h4 { font-size: 0.9rem; margin-bottom: 0.3rem; }
+    .feature p  { font-size: 0.78rem; color: var(--muted); line-height: 1.5; }
+
+    /* ── FOOTER ── */
+    footer {
+      text-align: center;
+      padding: 1.5rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+    }
+    footer strong { color: var(--accent); }
+
+    @media (max-width: 700px) {
+      nav { padding: 1rem 1.2rem; }
+      .nav-links { gap: 1rem; }
+      .result-card { grid-template-columns: 1fr; }
+      .movie-details { border-left: none; border-top: 1px solid var(--border); padding-left: 0; padding-top: 1.2rem; }
+      .features { grid-template-columns: 1fr 1fr; }
+    }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>IMDB Rate Prediction</h1>
-    <p class="subtitle">Análisis de sentimiento para reseñas de películas</p>
 
-    <div class="status-bar">
-      <span class="dot" id="dot"></span>
-      <span class="status-text" id="status-text">Verificando servicio...</span>
+  <!-- NAV -->
+  <nav>
+    <div class="nav-logo">
+      <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/>
+        <line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/>
+        <line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/>
+      </svg>
+      MovieRate <span>AI</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="#" class="active">Home</a></li>
+      <li><a href="#">How It Works</a></li>
+      <li><a href="#">About</a></li>
+      <li><a href="#">Contact</a></li>
+    </ul>
+  </nav>
+
+  <!-- HERO -->
+  <section class="hero">
+    <h1>Movie Rating<br><span class="yellow">Predictor</span> ✨</h1>
+    <p>Select a movie and get an estimated rating from 1 to 10 using AI.</p>
+
+    <div class="search-wrap">
+      <!-- Search -->
+      <div class="search-box">
+        <svg class="icon-search" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input type="text" id="movie-input" placeholder="Search for a movie by name..." autocomplete="off" />
+        <svg class="icon-chevron" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+        <div class="dropdown" id="dropdown"></div>
+      </div>
+
+      <!-- Model label -->
+      <div class="model-label" id="model-label">Loading model info...</div>
+
+      <!-- Button -->
+      <button class="btn-predict" onclick="predictRating()">
+        <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        Predict Rating
+      </button>
+
+      <p class="powered">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        Powered by Machine Learning
+      </p>
+    </div>
+  </section>
+
+  <!-- RESULT -->
+  <section class="result-section" id="result-section">
+    <div class="result-card">
+      <div class="rating-box">
+        <div class="label">Predicted Rating</div>
+        <div class="rating-value">
+          <span class="star">⭐</span>
+          <span id="rating-value">—</span>
+          <span class="out">/10</span>
+        </div>
+        <span class="confidence" id="confidence-badge">—</span>
+      </div>
+      <div class="movie-details">
+        <table>
+          <tr><td>Movie</td><td id="res-title">—</td></tr>
+          <tr><td>Release Year</td><td id="res-year">—</td></tr>
+          <tr><td>Genre</td><td id="res-genre">—</td></tr>
+          <tr><td>Director</td><td id="res-director">—</td></tr>
+          <tr><td>Main Cast</td><td id="res-cast">—</td></tr>
+        </table>
+      </div>
+      <div class="about-box">
+        <h4>About This Prediction</h4>
+        <p style="font-size:.8rem;color:var(--muted);margin-bottom:.8rem;">Our AI model analyzes multiple factors to predict the potential rating of a movie.</p>
+        <ul>
+          <li><span>🎬</span> Director Impact</li>
+          <li><span>👥</span> Main Actors</li>
+          <li><span>🏷️</span> Genre Popularity</li>
+          <li><span>💬</span> Audience Reviews</li>
+          <li><span>📊</span> Number of Votes</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <div class="features">
+    <div class="feature">
+      <div class="feature-icon purple">🧠</div>
+      <div>
+        <h4>AI Powered</h4>
+        <p>Machine learning models trained on thousands of movies and user reviews.</p>
+      </div>
+    </div>
+    <div class="feature">
+      <div class="feature-icon blue">🗄️</div>
+      <div>
+        <h4>Data Driven</h4>
+        <p>Using metadata, cast, crew, genres, and audience feedback.</p>
+      </div>
+    </div>
+    <div class="feature">
+      <div class="feature-icon green">🎯</div>
+      <div>
+        <h4>Accurate</h4>
+        <p>Advanced algorithms designed to provide reliable predictions.</p>
+      </div>
+    </div>
+    <div class="feature">
+      <div class="feature-icon amber">⚡</div>
+      <div>
+        <h4>Instant Results</h4>
+        <p>Get movie rating predictions in just a few seconds.</p>
+      </div>
     </div>
   </div>
 
+  <!-- FOOTER -->
+  <footer>
+    🍿 Ratings are predicted on a scale from <strong>1 to 10</strong>
+  </footer>
+
   <script>
-    async function checkStatus() {
-      const dot = document.getElementById("dot");
-      const text = document.getElementById("status-text");
+    let allMovies = [];       // lista completa desde S3
+    let selectedMovie = null; // objeto JSON completo del film seleccionado
+
+    // ── Detecta el campo con nombre del título en el JSON ──
+    function getTitle(movie) {
+      return movie.title ?? movie.name ?? movie.primaryTitle
+        ?? movie.movie_title ?? Object.values(movie)[0] ?? "—";
+    }
+
+    // ── Carga películas desde S3 via /movies ──
+    async function loadMovies() {
       try {
-        const res = await fetch("/status");
+        const res = await fetch("/movies");
+        if (!res.ok) return;
         const data = await res.json();
-        if (data.status === "ok") {
-          dot.classList.add("ok");
-          text.textContent = "Servicio activo — modelo: " + data.model;
-        } else {
-          dot.classList.add("error");
-          text.textContent = "Servicio con errores";
-        }
+        allMovies = data.movies ?? [];
       } catch {
-        dot.classList.add("error");
-        text.textContent = "No se pudo conectar al servicio";
+        allMovies = [];
       }
     }
-    checkStatus();
+
+    // ── Combobox con búsqueda ──
+    const input    = document.getElementById("movie-input");
+    const dropdown = document.getElementById("dropdown");
+
+    function renderDropdown(query) {
+      const q = query.toLowerCase().trim();
+      const matches = q
+        ? allMovies.filter(m => getTitle(m).toLowerCase().includes(q)).slice(0, 20)
+        : allMovies.slice(0, 20);
+
+      if (!matches.length) {
+        dropdown.innerHTML = `<div class="dropdown-empty">No results found</div>`;
+      } else {
+        dropdown.innerHTML = matches.map((m, i) =>
+          `<div class="dropdown-item" data-idx="${i}" data-title="${getTitle(m)}">
+            ${getTitle(m)}
+          </div>`
+        ).join("");
+        dropdown.querySelectorAll(".dropdown-item").forEach(el => {
+          el.addEventListener("mousedown", () => selectMovie(matches[+el.dataset.idx]));
+        });
+      }
+      dropdown.classList.add("open");
+    }
+
+    function selectMovie(movie) {
+      selectedMovie = movie;
+      input.value = getTitle(movie);
+      dropdown.classList.remove("open");
+      console.log("Selected movie:", selectedMovie);
+    }
+
+    input.addEventListener("input", () => {
+      if (allMovies.length) renderDropdown(input.value);
+    });
+    input.addEventListener("focus", () => {
+      if (allMovies.length) renderDropdown(input.value);
+    });
+    input.addEventListener("blur", () => {
+      setTimeout(() => dropdown.classList.remove("open"), 150);
+    });
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter") { dropdown.classList.remove("open"); predictRating(); }
+      if (e.key === "Escape") dropdown.classList.remove("open");
+    });
+
+    // ── Label del modelo W&B ──
+    async function loadModelLabel() {
+      const label = document.getElementById("model-label");
+      try {
+        const res = await fetch("/model");
+        if (!res.ok) { label.textContent = ""; return; }
+        const m = await res.json();
+        label.innerHTML = `
+          <span class="badge">
+            <span class="dot"></span>
+            Production model: ${m.name} ${m.version}
+          </span>`;
+      } catch {
+        label.textContent = "";
+      }
+    }
+
+    // ── Predicción via POST /predict ──
+    async function predictRating() {
+      if (!selectedMovie) { alert("Please select a movie first."); return; }
+      const reviewText = selectedMovie.review_text ?? selectedMovie.plot ?? "";
+
+      const title  = getTitle(selectedMovie);
+      const genres = selectedMovie.genres ?? selectedMovie.genre ?? null;
+
+      const payload = {
+        review_text:  reviewText,
+        movie_title:  title !== "—" ? title : undefined,
+        year:         selectedMovie.year ?? selectedMovie.startYear ?? undefined,
+        runtime:      selectedMovie.runtime ?? selectedMovie.runtime_min ?? undefined,
+        genres:       Array.isArray(genres) ? genres
+                        : (typeof genres === "string" ? genres.split(",").map(g => g.trim()) : undefined),
+      };
+
+      const btn = document.querySelector(".btn-predict");
+      btn.disabled = true;
+      btn.textContent = "Predicting…";
+
+      try {
+        const res = await fetch("/predict", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail ?? `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        const rating     = data.prediction;
+        const confidence = rating >= 8 ? "High Confidence" : rating >= 6 ? "Medium Confidence" : "Low Confidence";
+
+        document.getElementById("rating-value").textContent     = rating;
+        document.getElementById("confidence-badge").textContent = confidence;
+        document.getElementById("res-title").textContent        = title;
+        document.getElementById("res-year").textContent         = selectedMovie.year ?? selectedMovie.startYear ?? "—";
+        document.getElementById("res-genre").textContent        = Array.isArray(genres) ? genres.join(", ") : (genres ?? "—");
+        document.getElementById("res-director").textContent     = selectedMovie.director ?? "—";
+        document.getElementById("res-cast").textContent         = selectedMovie.cast ?? selectedMovie.actors ?? "—";
+        document.getElementById("result-section").classList.add("visible");
+      } catch (e) {
+        alert(`Prediction failed: ${e.message}`);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `
+          <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          Predict Rating`;
+      }
+    }
+
+    loadModelLabel();
+    loadMovies();
   </script>
 </body>
 </html>

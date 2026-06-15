@@ -13,6 +13,7 @@ variable "app_name" {
 variable "image_uri" {
   description = "URI completa de la imagen en ECR, ej: 123456789.dkr.ecr.us-east-1.amazonaws.com/imdb-rate-prediction:latest"
   type        = string
+  default     = ""
 }
 
 variable "container_port" {
