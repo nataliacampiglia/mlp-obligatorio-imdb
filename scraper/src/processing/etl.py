@@ -3,13 +3,16 @@
 Extract  : lee los archivos Parquet de películas y reviews desde S3
 Transform: une las tablas, agrega features de reviews, codifica géneros y certificados
 Load     : sube el dataset procesado de vuelta a S3
+           sube además un JSON de inferencia con los datos crudos + reviews anidadas
 
 Uso:
     cd scraper
     poetry run python -m src.processing.etl
 
-Resultado:
+Resultados:
     s3://{S3Bucket}/{S3Prefix}/processed/training_dataset.parquet
+    s3://{S3Bucket}/{S3Prefix}/inference/inference_dataset.json
+    data/Inference/inference_dataset.json  (copia local)
 
 Columnas del dataset final:
     imdb_id            — identificador de la película (no usar como feature)
@@ -30,9 +33,12 @@ Columnas que se excluyen y por qué:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
+import boto3
+import numpy as np
 import pandas as pd
 from tabulate import tabulate
 
@@ -43,6 +49,23 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from src.settings.settings import load_settings
 from src.storage.s3 import upload_dataframe
+
+class _NumpyEncoder(json.JSONEncoder):
+    """Convierte tipos numpy a tipos Python nativos para que json.dump no falle.
+    pandas devuelve numpy.bool_, numpy.int64, numpy.float64, numpy.ndarray
+    al iterar un DataFrame, y el encoder estándar de JSON no los soporta."""
+
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return None if np.isnan(obj) else float(obj)
+        if isinstance(obj, np.bool_):
+            return int(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
 
 # columnas de texto largo que truncamos para que la tabla entre en el terminal
 _COLS_TRUNCAR = {"plot", "review_text", "review_title", "reviewer_name", "title"}
@@ -58,7 +81,55 @@ def _tabla(df: pd.DataFrame, n: int = 10) -> str:
     return tabulate(vista, headers="keys", tablefmt="rounded_outline", showindex=False)
 
 
-def build_dataset(bucket: str, prefix: str) -> pd.DataFrame:
+def _nan_a_none(valor):
+    """Convierte NaN/NA a None y floats enteros (2012.0) a int para JSON limpio."""
+    if isinstance(valor, list):
+        return valor
+    # numpy y python floats: NaN → None, enteros sin decimales → int
+    if isinstance(valor, (float, np.floating)):
+        if np.isnan(valor):
+            return None
+        return int(valor) if valor == int(valor) else float(valor)
+    try:
+        return None if pd.isna(valor) else valor
+    except (TypeError, ValueError):
+        return valor
+
+
+
+def _generar_json_inferencia(
+    df_procesado: pd.DataFrame, df_reviews: pd.DataFrame
+) -> list[dict]:
+    """Arma la lista de objetos para inferencia: las mismas columnas que el
+    parquet de entrenamiento, con las reviews anidadas como lista por película."""
+
+    # agrupamos las reviews por película para accederlas rápido al iterar
+    cols_review = ["rating", "review_title", "review_text", "helpful_votes"]
+    reviews_por_pelicula: dict[str, list[dict]] = {}
+    if not df_reviews.empty and "movie_imdb_id" in df_reviews.columns:
+        cols_presentes = [c for c in cols_review if c in df_reviews.columns]
+        for imdb_id, grupo in df_reviews.groupby("movie_imdb_id"):
+            reviews_por_pelicula[str(imdb_id)] = [
+                {col: _nan_a_none(fila[col]) for col in cols_presentes}
+                for _, fila in grupo[cols_presentes].iterrows()
+            ]
+
+    resultado = []
+    for _, fila in df_procesado.iterrows():
+        obj = {}
+        for col in df_procesado.columns:
+            val = _nan_a_none(fila[col])
+            # get_dummies devuelve bool en pandas moderno; lo convertimos a 0/1
+            if isinstance(val, bool):
+                val = int(val)
+            obj[col] = val
+        obj["reviews"] = reviews_por_pelicula.get(str(fila["imdb_id"]), [])
+        resultado.append(obj)
+
+    return resultado
+
+
+def build_dataset(bucket: str, prefix: str) -> tuple[pd.DataFrame, list[dict]]:
     base = f"s3://{bucket}/{prefix}"
 
     # --------------------------------------------------------------------- #
@@ -84,7 +155,7 @@ def build_dataset(bucket: str, prefix: str) -> pd.DataFrame:
     # si no hay datos todavía, salimos con un mensaje claro en vez de crashear
     if df_movies.empty:
         print("\nNo hay películas en S3 todavía. Corré el scraper primero.")
-        return pd.DataFrame()
+        return pd.DataFrame(), []
 
     # --------------------------------------------------------------------- #
     # TRANSFORM paso 1 — deduplicación de películas                         #
@@ -158,8 +229,8 @@ def build_dataset(bucket: str, prefix: str) -> pd.DataFrame:
     # --------------------------------------------------------------------- #
     # TRANSFORM paso 5 — eliminamos columnas que no sirven como features    #
     # --------------------------------------------------------------------- #
-    columnas_a_eliminar = ["title", "plot", "votes", "directors", "main_cast"]
-    df = df.drop(columns=[c for c in columnas_a_eliminar if c in df.columns])
+    # columnas_a_eliminar = ["metascore", "plot", "votes", "directors", "main_cast"]
+    # df = df.drop(columns=[c for c in columnas_a_eliminar if c in df.columns])
 
     # --------------------------------------------------------------------- #
     # TRANSFORM paso 6 — eliminamos filas sin target                        #
@@ -170,6 +241,13 @@ def build_dataset(bucket: str, prefix: str) -> pd.DataFrame:
     eliminadas = antes - len(df)
     if eliminadas:
         print(f"Se eliminaron {eliminadas:,} filas sin imdb_rating")
+
+    # --------------------------------------------------------------------- #
+    # generamos el JSON de inferencia usando el df procesado (mismo contenido
+    # que el parquet) y agregamos las reviews como lista anidada por película #
+    # --------------------------------------------------------------------- #
+    print("\nGenerando JSON de inferencia...")
+    datos_inferencia = _generar_json_inferencia(df, df_reviews)
 
     # --------------------------------------------------------------------- #
     # resumen del dataset final                                              #
@@ -187,7 +265,7 @@ def build_dataset(bucket: str, prefix: str) -> pd.DataFrame:
     else:
         print("\nSin valores nulos — listo para entrenar.")
 
-    return df
+    return df, datos_inferencia
 
 
 if __name__ == "__main__":
@@ -196,11 +274,35 @@ if __name__ == "__main__":
     bucket: str = settings["S3Bucket"]
     prefix: str = settings["S3Prefix"]
 
-    df = build_dataset(bucket, prefix)
+    df, datos_inferencia = build_dataset(bucket, prefix)
 
     # --------------------------------------------------------------------- #
-    # LOAD — subimos el dataset procesado a S3                              #
+    # LOAD 1 — subimos el dataset de entrenamiento a S3 como Parquet        #
     # --------------------------------------------------------------------- #
-    key = f"{prefix}/processed/training_dataset.parquet"
-    upload_dataframe(df, bucket, key)
-    print(f"\nDataset subido → s3://{bucket}/{key}")
+    key_parquet = f"{prefix}/processed/training_dataset.parquet"
+    upload_dataframe(df, bucket, key_parquet)
+    print(f"\nParquet subido  → s3://{bucket}/{key_parquet}")
+
+    # --------------------------------------------------------------------- #
+    # LOAD 2 — guardamos el JSON de inferencia localmente y lo subimos a S3 #
+    # el JSON tiene los datos crudos de cada película con sus reviews        #
+    # anidadas, listo para usar en predicción                                #
+    # --------------------------------------------------------------------- #
+    carpeta_inferencia = Path("data/Inference")
+    carpeta_inferencia.mkdir(parents=True, exist_ok=True)
+    archivo_local = carpeta_inferencia / "inference_dataset.json"
+
+    # guardamos una copia local
+    with open(archivo_local, "w", encoding="utf-8") as f:
+        json.dump(datos_inferencia, f, ensure_ascii=False, indent=2, cls=_NumpyEncoder)
+    print(f"JSON guardado   → {archivo_local}  ({len(datos_inferencia):,} películas)")
+
+    # subimos a S3
+    key_json = f"{prefix}/inference/inference_dataset.json"
+    boto3.client("s3").put_object(
+        Bucket=bucket,
+        Key=key_json,
+        Body=json.dumps(datos_inferencia, ensure_ascii=False, cls=_NumpyEncoder).encode("utf-8"),
+        ContentType="application/json",
+    )
+    print(f"JSON subido     → s3://{bucket}/{key_json}")

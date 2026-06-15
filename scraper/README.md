@@ -8,7 +8,7 @@ IMDB data scraper for a movie rating prediction ML project (obligatorio MLP).
 - **Reviews**: reviewer name, score (1–10), review text, helpful votes — up to 25 reviews per movie
 
 Data is stored in both **SQLite** (`src/database/imdb.db`) and **JSONL** files (`data/movies/`).
-When `S3Bucket` is configured, the scraped movies and reviews are also uploaded to S3 as Parquet files.
+When `S3Bucket` is configured, the scraped movies and reviews are also uploaded to S3 as Parquet files. Each scraper run creates a new timestamped file, so multiple runs on the same day do not overwrite each other.
 
 ## Setup
 
@@ -119,7 +119,7 @@ El ETL lee los archivos Parquet crudos que el scraper subió a S3, los transform
 
 | Paso | Qué hace |
 |---|---|
-| **Extract** | Lee todas las particiones de `movies/` y `reviews/` desde S3 |
+| **Extract** | Lee todas las particiones y runs de `movies/` y `reviews/` desde S3 |
 | **Transform 1** | Deduplica películas si el scraper corrió más de una vez (se queda con la versión más reciente) |
 | **Transform 2** | Agrega las reviews por película: `num_reviews`, `avg_review_rating`, `avg_helpful_votes` |
 | **Transform 3** | Codifica géneros como multi-hot (`genre_action`, `genre_drama`, etc.) |
@@ -153,7 +153,12 @@ El ETL lee los archivos Parquet crudos que el scraper subió a S3, los transform
 
 ### Cómo correrlo
 
-Primero asegurate de tener datos en S3 (correr el scraper al menos una vez con éxito).
+Primero asegurate de tener datos en S3 (correr el scraper al menos una vez con éxito). Si corrés el scraper varias veces el mismo día, cada corrida queda guardada con un timestamp distinto:
+
+```text
+s3://mlp-imdb-data/imdb/movies/scraped_date=YYYY-MM-DD/run_YYYYMMDD_HHMMSS.parquet
+s3://mlp-imdb-data/imdb/reviews/scraped_date=YYYY-MM-DD/run_YYYYMMDD_HHMMSS.parquet
+```
 
 ```bash
 cd scraper
@@ -182,10 +187,18 @@ y = df["imdb_rating"]
 ```
 s3://mlp-imdb-data/
   imdb/
-    movies/scraped_date=YYYY-MM-DD/data.parquet    ← datos crudos del scraper
-    reviews/scraped_date=YYYY-MM-DD/data.parquet   ← datos crudos del scraper
+    movies/
+      scraped_date=YYYY-MM-DD/
+        run_YYYYMMDD_HHMMSS.parquet                ← datos crudos de una corrida
+        run_YYYYMMDD_HHMMSS.parquet                ← otra corrida del mismo día
+    reviews/
+      scraped_date=YYYY-MM-DD/
+        run_YYYYMMDD_HHMMSS.parquet                ← reviews crudas de una corrida
+        run_YYYYMMDD_HHMMSS.parquet                ← otra corrida del mismo día
     processed/
       training_dataset.parquet                     ← dataset listo para entrenar
+    inference/
+      inference_dataset.json                       ← dataset para inferencia
 ```
 
 ## Verify the data
