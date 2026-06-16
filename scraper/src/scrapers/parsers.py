@@ -43,10 +43,19 @@ def parse_runtime(text: str | None) -> int | None:
     return total if total else None
 
 
-def parse_year(ld: dict[str, Any]) -> int | None:
+def parse_year(ld: dict[str, Any], page: Page | None = None) -> int | None:
     date = ld.get("datePublished") or ld.get("startDate") or ""
     m = re.search(r"\d{4}", str(date))
-    return int(m.group()) if m else None
+    if m:
+        return int(m.group())
+    # fallback: year in the hero metadata link to /releaseinfo/
+    if page:
+        el = page.locator('a[href*="/releaseinfo/"]').first
+        if el.count():
+            m = re.search(r"\d{4}", el.inner_text())
+            if m:
+                return int(m.group())
+    return None
 
 
 def parse_rating(ld: dict[str, Any]) -> float | None:
@@ -95,6 +104,13 @@ def parse_certificate(ld: dict[str, Any]) -> str | None:
     return str(val).strip() if val else None
 
 
+def parse_title_type(ld: dict[str, Any]) -> str | None:
+    val = ld.get("@type")
+    if isinstance(val, list):
+        return str(val[0]).strip() if val else None
+    return str(val).strip() if val else None
+
+
 def parse_metascore(page: Page) -> int | None:
     el = page.locator("span.score-meta").first
     if el.count():
@@ -139,7 +155,7 @@ def build_movie(imdb_id: str, page: Page, ld: dict[str, Any]) -> Movie | None:
     return Movie(
         imdb_id=imdb_id,
         title=title,
-        year=parse_year(ld),
+        year=parse_year(ld, page),
         imdb_rating=parse_rating(ld),
         votes=parse_votes(ld),
         genres=parse_genres(ld),

@@ -3,7 +3,7 @@ IMDBScraper:
   RandomTitleStart: 1
   RandomTitleEnd: 2488998
   # 250
-  MaxMovies: 60
+  MaxMovies: 500
   MaxReviewsPerMovie: 200
   DBPath: src/database/imdb.db
   OutputDir: data/movies
