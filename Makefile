@@ -1,9 +1,8 @@
-SCRAPER_DIR := scraper
-
 # ─── setup ────────────────────────────────────────────────────────────────────
 
-scraper-install:
-	cd $(SCRAPER_DIR) && poetry install && poetry run playwright install chromium
+install:
+	poetry install --with scraper,deployment
+	poetry run playwright install chromium
 
 # ─── aws ──────────────────────────────────────────────────────────────────────
 
@@ -22,17 +21,17 @@ aws-credentials:
 
 # Abre el navegador para hacer login manual en IMDB y guarda la sesión
 scraper-login:
-	cd $(SCRAPER_DIR) && poetry run python -m src.main --login-only
+	poetry run python -m scraper.src.main --login-only
 
 # Corre el scraper y sube los datos a S3 como Parquet
 scraper-run:
-	cd $(SCRAPER_DIR) && poetry run python -m src.main
+	poetry run python -m scraper.src.main
 
 # ─── etl ──────────────────────────────────────────────────────────────────────
 
 # Lee los datos crudos de S3, los procesa y sube el dataset de entrenamiento
 etl-run:
-	cd $(SCRAPER_DIR) && poetry run python -m src.processing.etl
+	poetry run python -m scraper.src.processing.etl
 
 
 # --- scrapper + etl ──────────────────────────────────────────────────────────
