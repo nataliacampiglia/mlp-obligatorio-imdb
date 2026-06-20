@@ -1,25 +1,34 @@
 import os
-import json
+import sys
 import boto3
 import wandb
+import pandas as pd
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from imdb_rating.schemas import ReviewInput, PredictionOutput
+from imdb_rating.schemas import PredictRequest, PredictionOutput
 from imdb_rating.registry import load as load_model_from_registry
+
+from external_apis import get_movie_with_credits, get_imdb_rating_and_votes, get_movie_review_texts
+from features import build_features, compute_vader_score
+
+
+def _pipe_tokenizer(x: str) -> list[str]:
+    return x.split("|")
+
+
+# joblib pickle resolves the tokenizer via __main__; uvicorn replaces it, so we inject.
+sys.modules["__main__"]._pipe_tokenizer = _pipe_tokenizer
+
 
 WANDB_PROJECT  = "imdb-rating"
 WANDB_ARTIFACT = "imdb-rating-model"
 WANDB_ALIAS    = "production"
-WANDB_ENTITY    = "mlprod-obli"
-
-S3_BUCKET       = "imdb-test-bucket-2026"
-S3_KEY          = os.getenv("S3_MOVIES_KEY", "peliculas_random.json")
+WANDB_ENTITY   = "mlprod-obli"
 
 app = FastAPI(title="IMDB Rate Prediction")
-
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 _MODEL = None
@@ -33,7 +42,6 @@ def _get_ssm_parameter(name: str) -> str:
 
 
 def _get_wandb_credentials() -> tuple[str, str]:
-    """Read credentials from SSM, falling back to env vars."""
     try:
         user = _get_ssm_parameter("wandb-org")
         api_key = _get_ssm_parameter("wandb-api-key")
@@ -82,18 +90,9 @@ def status():
     }
 
 
-@app.get("/movies")
-def list_movies():
-    try:
-        s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "us-east-1"))
-        obj = s3.get_object(Bucket=S3_BUCKET, Key=S3_KEY)
-        data = json.loads(obj["Body"].read())
-        movies = data if isinstance(data, list) else data.get("movies", [])
-        return {"movies": movies}
-    except s3.exceptions.NoSuchKey:
-        raise HTTPException(status_code=404, detail=f"Archivo '{S3_KEY}' no encontrado en el bucket")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Error leyendo desde S3: {e}")
+@app.get("/config")
+def config():
+    return {"tmdb_token": os.getenv("TMDB_TOKEN", "")}
 
 
 @app.get("/model")
@@ -118,10 +117,36 @@ def get_production_model():
 
 
 @app.post("/predict", response_model=PredictionOutput)
-def predict(payload: ReviewInput) -> PredictionOutput:
+def predict(payload: PredictRequest) -> PredictionOutput:
     if _MODEL is None or _MODEL_VERSION is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
-    prediction = int(_MODEL.predict([payload.model_dump()])[0])
-    print(f"Predicted rating {prediction} for review: {payload.review_text[:30]}...")
-    return PredictionOutput(prediction=prediction, model_version=_MODEL_VERSION)
+    try:
+        movie = get_movie_with_credits(payload.tmdb_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"TMDb fetch failed: {e}")
+
+    imdb_id = movie.get("imdb_id")
+    real_rating, imdb_votes = (None, None)
+    if imdb_id:
+        try:
+            real_rating, imdb_votes = get_imdb_rating_and_votes(imdb_id)
+        except Exception as e:
+            print(f"[predict] OMDb fetch failed: {e}")
+
+    review_texts = get_movie_review_texts(movie)
+    reviews_score = compute_vader_score(review_texts)
+
+    features = build_features(movie, imdb_votes, reviews_score)
+    raw = float(_MODEL.predict(pd.DataFrame([features]))[0])
+    prediction = max(1, min(10, round(raw * 10)))
+
+    print(f"[predict] tmdb={payload.tmdb_id} imdb={imdb_id} pred={prediction} real={real_rating} reviews_n={len(review_texts)} vader={reviews_score:.3f}")
+
+    return PredictionOutput(
+        prediction=prediction,
+        prediction_raw=raw,
+        real_rating=real_rating,
+        imdb_id=imdb_id,
+        model_version=_MODEL_VERSION,
+    )
