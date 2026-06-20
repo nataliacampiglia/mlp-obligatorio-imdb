@@ -5,8 +5,10 @@ services:
       - "8000:8000"
     volumes:
       - ./deployment:/app
+      - ./src:/app/src
     environment:
       - AWS_REGION=${AWS_REGION:-us-east-1}
-      # Fallback local para cuando SSM no está disponible
       - WANDB_USER=${WANDB_USER:-}
       - WANDB_API_KEY=${WANDB_API_KEY:-}
+      - TMDB_TOKEN=${TMDB_TOKEN:-}
+      - OMDB_API_KEY=${OMDB_API_KEY:-}
