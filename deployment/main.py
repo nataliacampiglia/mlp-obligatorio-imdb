@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from imdb_rating.schemas import PredictRequest, PredictionOutput
-from imdb_rating.registry import load as load_model_from_registry
+from imdb_rating.registry import load as load_model_from_registry, get_production_metadata
 
 from external_apis import get_movie_with_credits, get_imdb_rating_and_votes, get_movie_review_texts
 from features import build_features, compute_vader_score
@@ -25,6 +25,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 _MODEL = None
 _MODEL_VERSION: str | None = None
+_MODEL_STRATEGY: str | None = None
 
 
 def _get_ssm_parameter(name: str) -> str:
@@ -70,6 +71,7 @@ def _load_model() -> None:
         return
 
     try:
+        global _MODEL_STRATEGY
         _MODEL, _MODEL_VERSION = load_model_from_registry(
             project=WANDB_PROJECT,
             artifact_name=WANDB_ARTIFACT,
@@ -77,7 +79,15 @@ def _load_model() -> None:
             alias=WANDB_ALIAS,
             api_key=api_key,
         )
-        print(f"[startup] Loaded {WANDB_ARTIFACT} version {_MODEL_VERSION}")
+        meta = get_production_metadata(
+            project=WANDB_PROJECT,
+            artifact_name=WANDB_ARTIFACT,
+            entity=WANDB_ENTITY,
+            alias=WANDB_ALIAS,
+            api_key=api_key,
+        ) or {}
+        _MODEL_STRATEGY = meta.get("strategy")
+        print(f"[startup] Loaded {WANDB_ARTIFACT} version {_MODEL_VERSION} strategy={_MODEL_STRATEGY}")
     except Exception as e:
         print(f"[startup] Could not load model from W&B: {e}")
 
@@ -148,6 +158,20 @@ def predict(payload: PredictRequest) -> PredictionOutput:
     prediction = round(max(1.0, min(10.0, raw * 10)), 1)
 
     print(f"[predict] tmdb={payload.tmdb_id} imdb={imdb_id} pred={prediction} real={real_rating} reviews_n={len(review_texts)} vader={reviews_score:.3f}")
+
+    log_prediction(
+        tmdb_id=payload.tmdb_id,
+        imdb_id=imdb_id,
+        movie_title=movie.get("title", ""),
+        prediction=prediction,
+        prediction_raw=raw,
+        real_rating=real_rating,
+        model_version=_MODEL_VERSION,
+        model_strategy=_MODEL_STRATEGY,
+        review_count=len(review_texts),
+        vader_score=reviews_score,
+        log_votes=features["log_votes"],
+    )
 
     return PredictionOutput(
         prediction=prediction,

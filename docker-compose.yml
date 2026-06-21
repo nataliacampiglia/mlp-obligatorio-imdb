@@ -6,9 +6,24 @@ services:
     volumes:
       - ./deployment:/app
       - ./src:/app/src
+      - ./monitoring:/app/monitoring
     environment:
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - WANDB_USER=${WANDB_USER:-}
       - WANDB_API_KEY=${WANDB_API_KEY:-}
       - TMDB_TOKEN=${TMDB_TOKEN:-}
       - OMDB_API_KEY=${OMDB_API_KEY:-}
+      - OBS_BUCKET_NAME=${OBS_BUCKET_NAME:-mlp-imdb-observability-2026}
+      - OBS_BUCKET_REGION=${OBS_BUCKET_REGION:-us-east-1}
+
+  monitoring:
+    build:
+      context: .
+      dockerfile: monitoring/Dockerfile
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./monitoring:/app/monitoring
+    environment:
+      - OBS_BUCKET_NAME=${OBS_BUCKET_NAME:-mlp-imdb-observability-2026}
+      - OBS_BUCKET_REGION=${OBS_BUCKET_REGION:-us-east-1}
