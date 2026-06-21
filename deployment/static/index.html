@@ -552,7 +552,7 @@
 
         // TODO PR-C: persistir { ts, imdb_id, prediction, real, error } para observabilidad
 
-        document.getElementById("rating-value").textContent     = rating;
+        document.getElementById("rating-value").textContent     = rating.toFixed(1);
         document.getElementById("confidence-badge").textContent = confidence;
         document.getElementById("res-title").textContent        = selectedMovie.title;
         document.getElementById("res-year").textContent         = selectedMovie.year ?? "—";
