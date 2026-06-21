@@ -1,5 +1,4 @@
 import os
-import sys
 import boto3
 import wandb
 import pandas as pd
@@ -13,15 +12,7 @@ from imdb_rating.registry import load as load_model_from_registry, get_productio
 
 from external_apis import get_movie_with_credits, get_imdb_rating_and_votes, get_movie_review_texts
 from features import build_features, compute_vader_score
-from monitoring.logger import log_prediction
-
-
-def _pipe_tokenizer(x: str) -> list[str]:
-    return x.split("|")
-
-
-# joblib pickle resolves the tokenizer via __main__; uvicorn replaces it, so we inject.
-sys.modules["__main__"]._pipe_tokenizer = _pipe_tokenizer
+import imdb_rating.transformers  # noqa: F401 — ensures pipe_tokenizer is importable on deserialization
 
 
 WANDB_PROJECT  = "imdb-rating"
@@ -56,9 +47,23 @@ def _get_wandb_credentials() -> tuple[str, str]:
         return user, api_key
 
 
+def _load_external_api_credentials() -> None:
+    """Lee TMDB_TOKEN y OMDB_API_KEY desde SSM; si no existen usa los env vars ya cargados."""
+    for ssm_name, env_key in [("tmdb-token", "TMDB_TOKEN"), ("omdb-api-key", "OMDB_API_KEY")]:
+        try:
+            os.environ[env_key] = _get_ssm_parameter(ssm_name)
+            print(f"[startup] {env_key} loaded from SSM")
+        except (BotoCoreError, ClientError):
+            if os.getenv(env_key):
+                print(f"[startup] {env_key} not in SSM, using env var")
+            else:
+                print(f"[startup] {env_key} not available (SSM nor env var)")
+
+
 @app.on_event("startup")
 def _load_model() -> None:
     global _MODEL, _MODEL_VERSION
+    _load_external_api_credentials()
     try:
         entity, api_key = _get_wandb_credentials()
     except (BotoCoreError, ClientError) as e:
@@ -150,7 +155,7 @@ def predict(payload: PredictRequest) -> PredictionOutput:
 
     features = build_features(movie, imdb_votes, reviews_score)
     raw = float(_MODEL.predict(pd.DataFrame([features]))[0])
-    prediction = max(1, min(10, round(raw * 10)))
+    prediction = round(max(1.0, min(10.0, raw * 10)), 1)
 
     print(f"[predict] tmdb={payload.tmdb_id} imdb={imdb_id} pred={prediction} real={real_rating} reviews_n={len(review_texts)} vader={reviews_score:.3f}")
 

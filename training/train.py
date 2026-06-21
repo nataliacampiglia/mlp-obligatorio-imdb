@@ -24,10 +24,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from imdb_rating.model import ConstantRatingModel
 from imdb_rating.registry import publish, get_production_metadata
-
-
-def _pipe_tokenizer(x: str) -> list[str]:
-    return x.split("|")
+from imdb_rating.transformers import pipe_tokenizer
 
 WANDB_ENTITY = "mlprod-obli"
 WANDB_PROJECT = "imdb-rating"
@@ -139,7 +136,7 @@ def train_elastic_net():
     # Para directores y actores usamos CountVectorizer con separador "|".
     # Esto funciona como one-hot/multi-hot encoding.
     people_vectorizer = CountVectorizer(
-        tokenizer=_pipe_tokenizer,
+        tokenizer=pipe_tokenizer,
         token_pattern=None,
         lowercase=False,
         binary=True,
