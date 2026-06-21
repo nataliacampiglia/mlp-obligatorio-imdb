@@ -7,7 +7,7 @@ class PredictRequest(BaseModel):
 
 
 class PredictionOutput(BaseModel):
-    prediction: int
+    prediction: float
     prediction_raw: float
     real_rating: Optional[float] = None
     imdb_id: Optional[str] = None
