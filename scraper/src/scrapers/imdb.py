@@ -5,10 +5,12 @@ from __future__ import annotations
 import os
 import random
 import time
+from collections import Counter
 from pathlib import Path
 from urllib.parse import urljoin
 
-from playwright.sync_api import BrowserContext, Page, sync_playwright
+from playwright.sync_api import BrowserContext, Page, TimeoutError as PlaywrightTimeoutError, sync_playwright
+from tabulate import tabulate
 
 from src.database.database_connection import insert_movie, insert_reviews
 from src.scrapers.auth import IMDBAuth
@@ -65,11 +67,23 @@ class IMDBScraper:
 
     # Tried in order on the /reviews/ page
     _REVIEWS_PAGE_SELECTORS = [
+        "article.user-review-item",
+        "div[data-testid='review-card-parent']",
         "div[data-testid='shoveler-items-container'] > div",
         "div.ipc-list-card--span",
         "article",
         "div.lister-item",
     ]
+    _REVIEWS_LOAD_MORE_SELECTOR = (
+        "div[data-testid='tturv-pagination'] button, "
+        "button.ipc-see-more__button, "
+        "button[data-testid='load-more-btn'], "
+        "button.ipl-load-more__button"
+    )
+    _REVIEWS_SPOILER_SELECTOR = (
+        "button.review-spoiler-button, "
+        "button[aria-label='Expand Spoiler']"
+    )
 
     def run(self) -> None:
         self.logger.info(
@@ -116,12 +130,6 @@ class IMDBScraper:
             while len(saved_movies) < self.max_movies and len(attempted_ids) < total_available_ids:
                 imdb_id = self._generate_random_title_id(attempted_ids)
                 attempted_ids.add(imdb_id)
-                self.logger.info(
-                    "Processing title %d/%d saved movies: %s",
-                    len(attempted_ids),
-                    self.max_movies,
-                    imdb_id,
-                )
                 try:
                     movie = self._scrape_movie(page, imdb_id)
                     if not movie:
@@ -137,9 +145,12 @@ class IMDBScraper:
                     insert_reviews(reviews)
                     self._save_reviews(reviews)
                     saved_reviews.extend(r.model_dump() for r in reviews)
+                    print("----------------------------------------------------------------------------------------------------------------")
                     self.logger.info(
-                        "Saved movie %s with %d reviews", imdb_id, len(reviews)
+                        "Saved movie: %s (%s/%s),  reviews: %d",
+                        imdb_id, len(saved_movies), self.max_movies, len(reviews)
                     )
+                    print("----------------------------------------------------------------------------------------------------------------")
                 except Exception as e:
                     self.logger.error("Failed to scrape reviews for %s: %s", imdb_id, e)
 
@@ -153,11 +164,46 @@ class IMDBScraper:
                     total_available_ids,
                 )
 
+            self._print_saved_movies_summary(saved_movies, saved_reviews)
+
             if self.s3_bucket:
                 self._upload_to_s3(saved_movies, saved_reviews)
 
             browser.close()
         self.logger.info("Scraping complete.")
+
+    def _print_saved_movies_summary(
+        self,
+        movies: list[dict],
+        reviews: list[dict],
+    ) -> None:
+        if not movies:
+            print("\nNo se guardaron películas.")
+            return
+
+        review_counts = Counter(review.get("movie_imdb_id") for review in reviews)
+        rows = [
+            {
+                "imdb_id": movie.get("imdb_id", ""),
+                "titulo": movie.get("title", ""),
+                "rating": movie.get("imdb_rating", ""),
+                "cantidad_reviews": review_counts.get(movie.get("imdb_id"), 0),
+            }
+            for movie in movies
+        ]
+        rows.sort(key=lambda row: row["cantidad_reviews"], reverse=True)
+        con_rating_sin_reviews = sum(
+            1
+            for row in rows
+            if row["rating"] not in (None, "") and row["cantidad_reviews"] == 0
+        )
+
+        print("\n--- películas guardadas por cantidad de reviews ---")
+        print(tabulate(rows, headers="keys", tablefmt="rounded_outline", showindex=False))
+        print(
+            "\nPelículas con rating pero sin reviews: "
+            f"{con_rating_sin_reviews} / {len(rows)}"
+        )
 
     def manual_login(self) -> None:
         """Open a visible browser so a human can complete login and save session state."""
@@ -252,9 +298,9 @@ class IMDBScraper:
         reviews = self._scrape_reviews_page(page, imdb_id)
         if reviews:
             return reviews
-        self.logger.warning(
-            "Reviews page returned nothing for %s — falling back to featured", imdb_id
-        )
+        # self.logger.warning(
+        #     "Reviews page returned nothing for %s — falling back to featured", imdb_id
+        # )
         return self._scrape_featured_reviews(page, imdb_id)
 
     def _scrape_reviews_page(self, page: Page, imdb_id: str) -> list[Review]:
@@ -270,18 +316,20 @@ class IMDBScraper:
                 return []
             page.goto(url, wait_until="domcontentloaded")
 
+        total_reviews_text = self._review_total_text(page)
+        # if total_reviews_text:
+        #     self.logger.info("Reviews page for %s reports %s", imdb_id, total_reviews_text)
+
         reviews: list[Review] = []
         processed = 0
 
         while len(reviews) < self.max_reviews_per_movie:
-            cards: list = []
-            for selector in self._REVIEWS_PAGE_SELECTORS:
-                cards = page.locator(selector).all()
-                if cards:
-                    break
+            cards = self._review_cards(page)
 
             if not cards or len(cards) <= processed:
                 break
+
+            self._expand_review_spoilers(page, imdb_id)
 
             for card in cards[processed:]:
                 if len(reviews) >= self.max_reviews_per_movie:
@@ -293,18 +341,115 @@ class IMDBScraper:
             processed = len(cards)
 
             if len(reviews) >= self.max_reviews_per_movie:
+                # self.logger.info(
+                #     "Stopping reviews for %s: reached MaxReviewsPerMovie=%d",
+                #     imdb_id,
+                #     self.max_reviews_per_movie,
+                # )
                 break
 
-            load_more = page.locator(
-                "button[data-testid='load-more-btn'], button.ipl-load-more__button"
-            ).first
-            if load_more.count():
-                load_more.click()
-                time.sleep(1.5)
-            else:
+            cards_before = len(cards)
+            if not self._click_reviews_load_more(page, imdb_id, cards_before):
                 break
 
         return reviews
+
+    def _review_total_text(self, page: Page) -> str | None:
+        total_el = page.locator("div[data-testid='tturv-total-reviews']").first
+        if not total_el.count():
+            return None
+        return total_el.inner_text().strip() or None
+
+    def _review_cards(self, page: Page) -> list:
+        for selector in self._REVIEWS_PAGE_SELECTORS:
+            cards = page.locator(selector).all()
+            if cards:
+                return cards
+        return []
+
+    def _expand_review_spoilers(self, page: Page, imdb_id: str) -> None:
+        spoiler_buttons = page.locator(self._REVIEWS_SPOILER_SELECTOR).all()
+        if not spoiler_buttons:
+            return
+
+        expanded = 0
+        for button in spoiler_buttons:
+            try:
+                if button.is_visible():
+                    button.click()
+                    expanded += 1
+            except Exception:
+                continue
+
+        # if expanded:
+        #     self.logger.info("Expanded %d spoiler reviews for %s", expanded, imdb_id)
+
+    def _click_reviews_load_more(self, page: Page, imdb_id: str, cards_before: int) -> bool:
+        load_more = self._reviews_load_more_button(page)
+        if not load_more:
+            self.logger.info("Stopping reviews for %s: no load-more button found", imdb_id)
+            return False
+
+        label = load_more.inner_text().strip() or load_more.get_attribute("aria-label") or "load more"
+        # self.logger.info(
+        #     "Clicking reviews pagination for %s: %s (cards before=%d)",
+        #     imdb_id,
+        #     label,
+        #     cards_before,
+        # )
+
+        try:
+            load_more.click()
+            page.wait_for_function(
+                """([selectors, previousCount]) => {
+                    for (const selector of selectors) {
+                        const count = document.querySelectorAll(selector).length;
+                        if (count > previousCount) return true;
+                    }
+                    return false;
+                }""",
+                arg=[self._REVIEWS_PAGE_SELECTORS, cards_before],
+                timeout=8000,
+            )
+        except PlaywrightTimeoutError:
+            cards_after = len(self._review_cards(page))
+            # self.logger.info(
+            #     "Stopping reviews for %s: pagination did not add cards (before=%d, after=%d)",
+            #     imdb_id,
+            #     cards_before,
+            #     cards_after,
+            # )
+            return False
+        except Exception as e:
+            # self.logger.warning("Stopping reviews for %s: pagination click failed: %s", imdb_id, e)
+            return False
+
+        cards_after = len(self._review_cards(page))
+        # self.logger.info(
+        #     "Loaded more reviews for %s: cards before=%d, cards after=%d",
+        #     imdb_id,
+        #     cards_before,
+        #     cards_after,
+        # )
+        return cards_after > cards_before
+
+    def _reviews_load_more_button(self, page: Page):
+        buttons = page.locator(self._REVIEWS_LOAD_MORE_SELECTOR).all()
+        for button in buttons:
+            try:
+                text = button.inner_text().strip().lower()
+                class_name = button.get_attribute("class") or ""
+                if (
+                    "more" in text
+                    or "see all" in text
+                    or "ipc-see-more__button" in class_name
+                    or button.get_attribute("data-testid") == "load-more-btn"
+                    or "ipl-load-more__button" in class_name
+                ):
+                    return button
+            except Exception:
+                continue
+        return None
 
     def _get_user_reviews_url(self, page: Page, imdb_id: str) -> str:
         title_url = f"{self.base_url}/title/{imdb_id}/"
@@ -327,12 +472,12 @@ class IMDBScraper:
         count_el = page.locator(
             "section[data-testid='UserReviews'] .ipc-title__subtext"
         ).first
-        if count_el.count():
-            self.logger.info(
-                "User reviews header for %s reports %s reviews",
-                imdb_id,
-                count_el.inner_text().strip(),
-            )
+        # if count_el.count():
+        #     self.logger.info(
+        #         "User reviews header for %s reports %s reviews",
+        #         imdb_id,
+        #         count_el.inner_text().strip(),
+        #     )
 
         return urljoin(self.base_url, href)
 
@@ -349,7 +494,7 @@ class IMDBScraper:
             "section[data-testid='UserReviews'] div[data-testid='shoveler-items-container'] > div"
         ).all()
         if not cards:
-            self.logger.warning("No featured review cards found for %s", imdb_id)
+            # self.logger.warning("No featured review cards found for %s", imdb_id)
             return []
 
         reviews: list[Review] = []
