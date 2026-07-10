@@ -51,3 +51,15 @@ scraper/data/
 *.db
 *.sqlite
 *.sqlite3
+
+# LaTeX build artifacts (informe/)
+informe/*.aux
+informe/*.bbl
+informe/*.blg
+informe/*.fdb_latexmk
+informe/*.fls
+informe/*.out
+informe/*.toc
+informe/*.synctex.gz
+informe/*.bcf
+informe/*.run.xml
