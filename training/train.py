@@ -23,7 +23,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
 from imdb_rating.model import ConstantRatingModel
-from imdb_rating.registry import publish
+from imdb_rating.registry import publish, get_production_metadata
+from imdb_rating.transformers import pipe_tokenizer
 
 WANDB_ENTITY = "mlprod-obli"
 WANDB_PROJECT = "imdb-rating"
@@ -135,7 +136,7 @@ def train_elastic_net():
     # Para directores y actores usamos CountVectorizer con separador "|".
     # Esto funciona como one-hot/multi-hot encoding.
     people_vectorizer = CountVectorizer(
-        tokenizer=lambda x: x.split("|"),
+        tokenizer=pipe_tokenizer,
         token_pattern=None,
         lowercase=False,
         binary=True,
@@ -251,6 +252,46 @@ def train_elastic_net():
         .head(10)[["title", "y_real", "y_pred", "abs_error"]]
     )
 
+
+    # ============================================================
+    # 10. Publicar modelo en W&B (solo promueve a production si mejora el MAE)
+    # ============================================================
+
+    prod_meta = get_production_metadata(
+        project=WANDB_PROJECT,
+        artifact_name=WANDB_ARTIFACT,
+        entity=WANDB_ENTITY,
+        alias=WANDB_ALIAS,
+    )
+    prod_mae = prod_meta.get("mae") if prod_meta else None
+
+    is_better = prod_mae is None or mae < prod_mae
+    aliases = ["latest", WANDB_ALIAS] if is_better else ["latest"]
+
+    if prod_mae is not None:
+        print(f"\nMAE producción actual: {prod_mae:.4f} | MAE nuevo modelo: {mae:.4f}")
+    print(f"¿Promover a '{WANDB_ALIAS}'? {'Sí' if is_better else 'No — el modelo actual es mejor'}")
+
+    new_metadata = {
+        "strategy": "elastic_net",
+        "best_params": grid.best_params_,
+        "mae": mae,
+        "rmse": rmse,
+        "r2": r2,
+    }
+
+    version = publish(
+        pipeline=best_model,
+        project=WANDB_PROJECT,
+        artifact_name=WANDB_ARTIFACT,
+        entity=WANDB_ENTITY,
+        aliases=aliases,
+        metadata=new_metadata,
+        run_name="elastic-net-gridsearch",
+    )
+    print(f"Published {WANDB_ARTIFACT} {version} with aliases {aliases}")
+
+
 def main() -> None:
     pipeline = Pipeline([("model", ConstantRatingModel(value=DUMMY_VALUE))])
     pipeline.fit([{}], [DUMMY_VALUE])
@@ -260,7 +301,7 @@ def main() -> None:
         project=WANDB_PROJECT,
         artifact_name=WANDB_ARTIFACT,
         entity=WANDB_ENTITY,
-        alias=WANDB_ALIAS,
+        aliases=[WANDB_ALIAS, "latest"],
         metadata={"strategy": "constant", "value": DUMMY_VALUE},
         run_name=f"dummy-constant-{DUMMY_VALUE}",
     )

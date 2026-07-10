@@ -30,6 +30,14 @@ vaderSentiment = "^3.3.2"
 [tool.poetry.group.deployment.dependencies]
 fastapi  = ">=0.110"
 uvicorn  = {extras = ["standard"], version = ">=0.27"}
+requests = ">=2.31"
+vaderSentiment = "^3.3.2"
+
+# ── Monitoring (Streamlit dashboard) ─────────────────────────────────────────
+[tool.poetry.group.monitoring.dependencies]
+streamlit = ">=1.30"
+plotly    = ">=5.18"
+requests  = ">=2.31"
 
 [build-system]
 requires      = ["poetry-core"]

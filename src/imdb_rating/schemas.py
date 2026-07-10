@@ -2,14 +2,13 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 
-class ReviewInput(BaseModel):
-    review_text: str = Field(..., description="Free-text content of the review.")
-    movie_title: Optional[str] = None
-    year: Optional[int] = None
-    runtime: Optional[int] = None
-    genres: Optional[list[str]] = None
+class PredictRequest(BaseModel):
+    tmdb_id: int = Field(..., description="The Movie Database id.")
 
 
 class PredictionOutput(BaseModel):
-    prediction: int = Field(..., ge=1, le=10, description="Predicted IMDB rating bucket (1-10).")
+    prediction: float
+    prediction_raw: float
+    real_rating: Optional[float] = None
+    imdb_id: Optional[str] = None
     model_version: str

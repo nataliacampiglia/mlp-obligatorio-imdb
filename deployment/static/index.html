@@ -386,9 +386,8 @@
         <table>
           <tr><td>Movie</td><td id="res-title">—</td></tr>
           <tr><td>Release Year</td><td id="res-year">—</td></tr>
-          <tr><td>Genre</td><td id="res-genre">—</td></tr>
-          <tr><td>Director</td><td id="res-director">—</td></tr>
-          <tr><td>Main Cast</td><td id="res-cast">—</td></tr>
+          <tr><td>IMDb Rating (real)</td><td id="res-real">—</td></tr>
+          <tr><td>Error</td><td id="res-error">—</td></tr>
         </table>
       </div>
       <div class="about-box">
@@ -443,47 +442,52 @@
   </footer>
 
   <script>
-    let allMovies = [];       // lista completa desde S3
-    let selectedMovie = null; // objeto JSON completo del film seleccionado
+    let selectedMovie = null;
+    let searchTimer = null;
+    let tmdbToken = "";
 
-    // ── Detecta el campo con nombre del título en el JSON ──
-    function getTitle(movie) {
-      return movie.title ?? movie.name ?? movie.primaryTitle
-        ?? movie.movie_title ?? Object.values(movie)[0] ?? "—";
-    }
-
-    // ── Carga películas desde S3 via /movies ──
-    async function loadMovies() {
-      try {
-        const res = await fetch("/movies");
-        if (!res.ok) return;
-        const data = await res.json();
-        allMovies = data.movies ?? [];
-      } catch {
-        allMovies = [];
-      }
-    }
-
-    // ── Combobox con búsqueda ──
     const input    = document.getElementById("movie-input");
     const dropdown = document.getElementById("dropdown");
 
-    function renderDropdown(query) {
-      const q = query.toLowerCase().trim();
-      const matches = q
-        ? allMovies.filter(m => getTitle(m).toLowerCase().includes(q)).slice(0, 20)
-        : allMovies.slice(0, 20);
+    async function loadConfig() {
+      try {
+        const res = await fetch("/config");
+        const c = await res.json();
+        tmdbToken = c.tmdb_token ?? "";
+      } catch {}
+    }
 
-      if (!matches.length) {
+    async function searchTmdb(query) {
+      const q = query.trim();
+      if (!q) { dropdown.classList.remove("open"); return; }
+      try {
+        const url = `https://api.themoviedb.org/3/search/movie?query=${encodeURIComponent(q)}`;
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${tmdbToken}`, accept: "application/json" } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const results = (data.results ?? []).slice(0, 10).map(m => ({
+          tmdb_id: m.id,
+          title: m.title,
+          year: m.release_date ? parseInt(m.release_date.slice(0, 4)) : null,
+        }));
+        renderDropdown(results);
+      } catch (e) {
+        dropdown.innerHTML = `<div class="dropdown-empty">Search failed: ${e.message}</div>`;
+        dropdown.classList.add("open");
+      }
+    }
+
+    function renderDropdown(results) {
+      if (!results.length) {
         dropdown.innerHTML = `<div class="dropdown-empty">No results found</div>`;
       } else {
-        dropdown.innerHTML = matches.map((m, i) =>
-          `<div class="dropdown-item" data-idx="${i}" data-title="${getTitle(m)}">
-            ${getTitle(m)}
+        dropdown.innerHTML = results.map((m, i) =>
+          `<div class="dropdown-item" data-idx="${i}">
+            ${m.title}${m.year ? ` (${m.year})` : ""}
           </div>`
         ).join("");
         dropdown.querySelectorAll(".dropdown-item").forEach(el => {
-          el.addEventListener("mousedown", () => selectMovie(matches[+el.dataset.idx]));
+          el.addEventListener("mousedown", () => selectMovie(results[+el.dataset.idx]));
         });
       }
       dropdown.classList.add("open");
@@ -491,16 +495,13 @@
 
     function selectMovie(movie) {
       selectedMovie = movie;
-      input.value = getTitle(movie);
+      input.value = movie.year ? `${movie.title} (${movie.year})` : movie.title;
       dropdown.classList.remove("open");
-      console.log("Selected movie:", selectedMovie);
     }
 
     input.addEventListener("input", () => {
-      if (allMovies.length) renderDropdown(input.value);
-    });
-    input.addEventListener("focus", () => {
-      if (allMovies.length) renderDropdown(input.value);
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => searchTmdb(input.value), 300);
     });
     input.addEventListener("blur", () => {
       setTimeout(() => dropdown.classList.remove("open"), 150);
@@ -510,7 +511,6 @@
       if (e.key === "Escape") dropdown.classList.remove("open");
     });
 
-    // ── Label del modelo W&B ──
     async function loadModelLabel() {
       const label = document.getElementById("model-label");
       try {
@@ -527,22 +527,8 @@
       }
     }
 
-    // ── Predicción via POST /predict ──
     async function predictRating() {
       if (!selectedMovie) { alert("Please select a movie first."); return; }
-      const reviewText = selectedMovie.review_text ?? selectedMovie.plot ?? "";
-
-      const title  = getTitle(selectedMovie);
-      const genres = selectedMovie.genres ?? selectedMovie.genre ?? null;
-
-      const payload = {
-        review_text:  reviewText,
-        movie_title:  title !== "—" ? title : undefined,
-        year:         selectedMovie.year ?? selectedMovie.startYear ?? undefined,
-        runtime:      selectedMovie.runtime ?? selectedMovie.runtime_min ?? undefined,
-        genres:       Array.isArray(genres) ? genres
-                        : (typeof genres === "string" ? genres.split(",").map(g => g.trim()) : undefined),
-      };
 
       const btn = document.querySelector(".btn-predict");
       btn.disabled = true;
@@ -552,23 +538,26 @@
         const res = await fetch("/predict", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({ tmdb_id: selectedMovie.tmdb_id }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.detail ?? `HTTP ${res.status}`);
         }
         const data = await res.json();
-        const rating     = data.prediction;
+        const rating = data.prediction;
         const confidence = rating >= 8 ? "High Confidence" : rating >= 6 ? "Medium Confidence" : "Low Confidence";
+        const real = data.real_rating;
+        const error = real != null ? Math.abs(rating - real).toFixed(2) : "—";
 
-        document.getElementById("rating-value").textContent     = rating;
+        // TODO PR-C: persistir { ts, imdb_id, prediction, real, error } para observabilidad
+
+        document.getElementById("rating-value").textContent     = rating.toFixed(1);
         document.getElementById("confidence-badge").textContent = confidence;
-        document.getElementById("res-title").textContent        = title;
-        document.getElementById("res-year").textContent         = selectedMovie.year ?? selectedMovie.startYear ?? "—";
-        document.getElementById("res-genre").textContent        = Array.isArray(genres) ? genres.join(", ") : (genres ?? "—");
-        document.getElementById("res-director").textContent     = selectedMovie.director ?? "—";
-        document.getElementById("res-cast").textContent         = selectedMovie.cast ?? selectedMovie.actors ?? "—";
+        document.getElementById("res-title").textContent        = selectedMovie.title;
+        document.getElementById("res-year").textContent         = selectedMovie.year ?? "—";
+        document.getElementById("res-real").textContent         = real != null ? real : "—";
+        document.getElementById("res-error").textContent        = error;
         document.getElementById("result-section").classList.add("visible");
       } catch (e) {
         alert(`Prediction failed: ${e.message}`);
@@ -582,8 +571,8 @@
       }
     }
 
+    loadConfig();
     loadModelLabel();
-    loadMovies();
   </script>
 </body>
 </html>

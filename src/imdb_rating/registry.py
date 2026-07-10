@@ -8,12 +8,29 @@ import wandb
 ARTIFACT_FILENAME = "pipeline.joblib"
 
 
+def get_production_metadata(
+    project: str,
+    artifact_name: str,
+    entity: Optional[str] = None,
+    alias: str = "production",
+    api_key: Optional[str] = None,
+) -> Optional[dict]:
+    """Return the metadata dict of the current production artifact, or None if it doesn't exist."""
+    try:
+        api = wandb.Api(api_key=api_key) if api_key else wandb.Api()
+        qualified = f"{entity}/{project}/{artifact_name}:{alias}" if entity else f"{project}/{artifact_name}:{alias}"
+        artifact = api.artifact(qualified)
+        return artifact.metadata
+    except Exception:
+        return None
+
+
 def publish(
     pipeline,
     project: str,
     artifact_name: str,
     entity: Optional[str] = None,
-    alias: str = "production",
+    aliases: Optional[list] = None,
     metadata: Optional[dict] = None,
     run_name: Optional[str] = None,
 ) -> str:
@@ -21,6 +38,9 @@ def publish(
 
     Returns the artifact version (e.g. "v0").
     """
+    if aliases is None:
+        aliases = ["production", "latest"]
+
     run = wandb.init(
         project=project,
         entity=entity,
@@ -39,7 +59,7 @@ def publish(
                 metadata=metadata or {},
             )
             artifact.add_file(path)
-            logged = run.log_artifact(artifact, aliases=[alias, "latest"])
+            logged = run.log_artifact(artifact, aliases=aliases)
             logged.wait()
             version = logged.version
     finally:
