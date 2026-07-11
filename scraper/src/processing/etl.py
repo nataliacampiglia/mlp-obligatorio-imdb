@@ -26,10 +26,12 @@ Columnas del dataset final:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
 import boto3
+from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError
 import numpy as np
 import pandas as pd
 from tabulate import tabulate
@@ -39,6 +41,7 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+os.chdir(_PROJECT_ROOT)
 
 from src.settings.settings import load_settings
 
@@ -63,6 +66,55 @@ class _NumpyEncoder(json.JSONEncoder):
 # columnas de texto largo que truncamos para que la tabla entre en el terminal
 _COLS_TRUNCAR = {"plot", "review_text", "review_title", "reviewer_name", "title"}
 _MAX_ANCHO_CELDA = 40
+
+
+class S3DataUnavailableError(RuntimeError):
+    """Error esperado cuando S3 no está disponible o faltan datos crudos."""
+
+
+def _mensaje_error_s3(error: Exception) -> str:
+    if isinstance(error, (NoCredentialsError, PartialCredentialsError)):
+        return (
+            "No encontré credenciales AWS válidas. Copiá el bloque AWS CLI del "
+            "Learner Lab y corré `make aws-credentials`."
+        )
+
+    if isinstance(error, ClientError):
+        codigo = error.response.get("Error", {}).get("Code", "")
+        if codigo in {"ExpiredToken", "InvalidToken", "TokenRefreshRequired"}:
+            return (
+                "Las credenciales AWS expiraron. Renová el bloque AWS CLI del "
+                "Learner Lab con `make aws-credentials` y volvé a correr el scraper "
+                "para subir los Parquet antes del ETL."
+            )
+        if codigo in {"AccessDenied", "UnauthorizedOperation"}:
+            return (
+                "AWS rechazó el acceso a S3. Revisá que las credenciales sean las "
+                "del Learner Lab activo y que tengan permiso sobre el bucket."
+            )
+        if codigo in {"NoSuchBucket", "404"}:
+            return "El bucket configurado no existe o no es accesible."
+        return f"AWS devolvió {codigo or 'un error'} al consultar S3: {error}"
+
+    return str(error)
+
+
+def _validar_prefijo_s3(bucket: str, prefix: str, nombre: str) -> None:
+    """Verifica credenciales y que exista al menos un objeto bajo el prefijo."""
+    try:
+        respuesta = boto3.client("s3").list_objects_v2(
+            Bucket=bucket,
+            Prefix=prefix,
+            MaxKeys=1,
+        )
+    except (ClientError, NoCredentialsError, PartialCredentialsError) as error:
+        raise S3DataUnavailableError(_mensaje_error_s3(error)) from error
+
+    if respuesta.get("KeyCount", 0) == 0:
+        raise S3DataUnavailableError(
+            f"No encontré archivos de {nombre} en s3://{bucket}/{prefix}. "
+            "Corré `make scraper-run` con credenciales AWS vigentes antes de `make etl-run`."
+        )
 
 
 def _tabla(df: pd.DataFrame, n: int = 10) -> str:
@@ -207,31 +259,53 @@ def _generar_json_procesado(df: pd.DataFrame) -> list[dict]:
 
 def build_dataset(bucket: str, prefix: str) -> list[dict]:
     base = f"s3://{bucket}/{prefix}"
+    movies_prefix = f"{prefix}/movies/"
+    reviews_prefix = f"{prefix}/reviews/"
 
     # --------------------------------------------------------------------- #
     # EXTRACT — leemos los datos crudos desde S3                            #
     # pandas lee todas las particiones (scraped_date=...) de una sola vez   #
     # --------------------------------------------------------------------- #
+    _validar_prefijo_s3(bucket, movies_prefix, "películas")
+    _validar_prefijo_s3(bucket, reviews_prefix, "reviews")
+
     print(f"Leyendo películas  → {base}/movies/")
-    df_movies = pd.read_parquet(f"{base}/movies/")
+    try:
+        df_movies = pd.read_parquet(f"{base}/movies/")
+    except Exception as error:
+        raise S3DataUnavailableError(
+            "No pude leer los Parquet de películas desde S3. "
+            f"Detalle: {_mensaje_error_s3(error)}"
+        ) from error
 
     print(f"Leyendo reviews    → {base}/reviews/")
-    df_reviews = pd.read_parquet(f"{base}/reviews/")
+    try:
+        df_reviews = pd.read_parquet(f"{base}/reviews/")
+    except Exception as error:
+        raise S3DataUnavailableError(
+            "No pude leer los Parquet de reviews desde S3. "
+            f"Detalle: {_mensaje_error_s3(error)}"
+        ) from error
 
     print(f"Filas crudas  — películas: {len(df_movies):,} | reviews: {len(df_reviews):,}")
-
-    # mostramos las primeras 10 películas crudas para verificar que los datos llegaron bien
-    print("\n--- primeras 10 películas (raw) ---")
-    print(_tabla(df_movies[["imdb_id", "title", "imdb_rating"]]))
-
-    # mostramos las primeras 10 reviews crudas
-    print("\n--- primeras 10 reviews (raw) ---")
-    print(_tabla(df_reviews[["movie_imdb_id", "reviewer_name", "rating"]]))
 
     # si no hay datos todavía, salimos con un mensaje claro en vez de crashear
     if df_movies.empty:
         print("\nNo hay películas en S3 todavía. Corré el scraper primero.")
         return []
+
+    preview_movies = df_movies[["imdb_id", "title", "imdb_rating"]].copy()
+    preview_movies["imdb_rating"] = pd.to_numeric(preview_movies["imdb_rating"], errors="coerce")
+
+    print("\n--- 10 mejores películas por rating ---")
+    print(_tabla(preview_movies.sort_values("imdb_rating", ascending=False)))
+
+    print("\n--- 10 peores películas por rating ---")
+    print(_tabla(preview_movies.sort_values("imdb_rating", ascending=True)))
+
+    # mostramos las primeras 10 reviews crudas
+    print("\n--- primeras 10 reviews (raw) ---")
+    print(_tabla(df_reviews[["movie_imdb_id", "reviewer_name", "rating"]]))
 
     # --------------------------------------------------------------------- #
     # TRANSFORM paso 1 — deduplicación de películas                         #
@@ -279,7 +353,16 @@ def build_dataset(bucket: str, prefix: str) -> list[dict]:
     nulos = nulos[nulos > 0]
     # mostramos las columnas con nulos
     if len(nulos):
-        print(f"\nColumnas con nulos (completar antes de entrenar):\n{nulos.to_string()}")
+        filas_nulos = [
+            {
+                "columna": columna,
+                "null": int(cantidad),
+                "total": len(df),
+            }
+            for columna, cantidad in nulos.items()
+        ]
+        print("\nColumnas con nulos (completar antes de entrenar):")
+        print(tabulate(filas_nulos, headers="keys", tablefmt="rounded_outline"))
     else:
         print("\nSin valores nulos — listo para entrenar.")
 
@@ -292,7 +375,11 @@ if __name__ == "__main__":
     bucket: str = settings["S3Bucket"]
     prefix: str = settings["S3Prefix"]
 
-    datos_procesados = build_dataset(bucket, prefix)
+    try:
+        datos_procesados = build_dataset(bucket, prefix)
+    except S3DataUnavailableError as error:
+        print(f"\nError leyendo datos crudos desde S3:\n{error}")
+        sys.exit(1)
 
     # --------------------------------------------------------------------- #
     # LOAD — guardamos el JSON procesado localmente y lo subimos a S3       #
@@ -308,10 +395,14 @@ if __name__ == "__main__":
 
     # subimos a S3
     key_json = f"{prefix}/processed/training_dataset.json"
-    boto3.client("s3").put_object(
-        Bucket=bucket,
-        Key=key_json,
-        Body=json.dumps(datos_procesados, ensure_ascii=False, cls=_NumpyEncoder).encode("utf-8"),
-        ContentType="application/json",
-    )
+    try:
+        boto3.client("s3").put_object(
+            Bucket=bucket,
+            Key=key_json,
+            Body=json.dumps(datos_procesados, ensure_ascii=False, cls=_NumpyEncoder).encode("utf-8"),
+            ContentType="application/json",
+        )
+    except (ClientError, NoCredentialsError, PartialCredentialsError) as error:
+        print(f"\nError subiendo JSON procesado a S3:\n{_mensaje_error_s3(error)}")
+        sys.exit(1)
     print(f"JSON subido     → s3://{bucket}/{key_json}")
