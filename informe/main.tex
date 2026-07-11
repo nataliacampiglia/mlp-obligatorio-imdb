@@ -58,20 +58,18 @@
 
 \section{Resumen}
 
-El proyecto implementa una solución de Machine Learning en Producción para predecir el rating de películas de IMDb. La solución cubre el ciclo completo desde la recolección de datos hasta el despliegue de una aplicación web en AWS.
+El proyecto implementa una solución de Machine Learning en Producción para predecir el rating de películas de IMDb. La solución cubre el ciclo completo desde la recolección de datos hasta el despliegue de una aplicación web en AWS, donde es flujo principal se muestra en la siguiente imagen.
 
-El flujo principal es:
 
-\begin{enumerate}
-    \item Recolectar datos de películas y reviews desde IMDb.
-    \item Persistir datos crudos en S3 en formato Parquet.
-    \item Ejecutar un proceso ETL para construir datasets de entrenamiento e inferencia.
-    \item Entrenar, evaluar y registrar un modelo de predicción.
-    \item Exponer la solución mediante una API FastAPI containerizada.
-    \item Desplegar la aplicación en AWS ECS Fargate usando Terraform.
-\end{enumerate}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/Gemini_Generated_Image_jz9hwzjz9hwzjz9h.png}
+    \caption{Flujo principal}
+    \label{fig:flujo-principal}
+\end{figure}
 
-La solución busca aplicar conceptos de MLOps vistos en clase: automatización de pipelines, versionado de datos, separación entre datos crudos y procesados, tracking de modelos, model registry, despliegue reproducible, gestión de secretos y monitoreo básico. Estas prácticas son relevantes porque los sistemas de Machine Learning suelen acumular deuda técnica no solo en el modelo, sino también en los datos, pipelines, configuración y serving \citep{sculley2015,huyen2022}.
+
+La solución busca aplicar conceptos de MLOps vistos en clase, automatización de pipelines, versionado de datos, separación entre datos crudos y procesados, tracking de modelos, model registry, despliegue reproducible, gestión de secretos y monitoreo básico. Estas prácticas son relevantes porque los sistemas de Machine Learning suelen acumular deuda técnica no solo en el modelo, sino también en los datos, pipelines, configuración y serving \citep{sculley2015,huyen2022}.
 
 \section{Objetivo del proyecto}
 
@@ -79,6 +77,7 @@ El objetivo es construir una aplicación capaz de estimar el rating esperado de 
 
 Además del modelo predictivo, el foco del obligatorio está en construir una arquitectura productiva alrededor del modelo. Por eso el proyecto no se limita al entrenamiento, sino que incluye ingesta de datos, procesamiento, almacenamiento, despliegue cloud e infraestructura como código.
 
+\newpage
 \section{Arquitectura general}
 
 \begin{figure}[H]
@@ -97,7 +96,7 @@ Luego, el pipeline de entrenamiento toma el dataset procesado, aplica feature en
 La parte de serving está implementada con FastAPI y se empaqueta en una imagen Docker. Esa imagen se publica en ECR y se despliega en AWS ECS Fargate detrás de un Application Load Balancer. La infraestructura se define con Terraform, lo que permite recrear el entorno de manera declarativa. Finalmente, los logs de ejecución quedan disponibles en CloudWatch, completando una primera capa de observabilidad para la API desplegada.
 
 
-
+\newpage
 \section{Recolección de datos}
 
 El proceso de recolección y preparación inicial de datos se ejecutó localmente. Para hacerlo repetible, se creó un \texttt{Makefile} que agrupa los comandos principales de setup, credenciales, login en IMDb, ejecución del scraper y corrida del ETL. Esto evita depender de comandos manuales largos y permite correr el flujo completo de forma más ordenada.
@@ -148,6 +147,7 @@ Películas & Identificador IMDb, título, año, rating IMDb, cantidad de votos, 
 Reviews & Película asociada, usuario, rating de la review, texto de la review y votos de utilidad. \\
 \bottomrule
 \end{longtable}
+
 
 El scraper contempla que IMDb puede requerir login para acceder a reviews completas. Para eso existe un flujo manual que guarda una sesión local y permite reutilizarla en corridas posteriores.
 
@@ -307,6 +307,20 @@ Como primera aproximación se pueden usar modelos de regresión como Linear Regr
 
 El script \texttt{train.py} lee la data procesada, aplica feature engineering y busca los mejores hiperparámetros \texttt{alpha} y \texttt{l1\_ratio} mediante \texttt{GridSearchCV} con validación cruzada de 5 folds, optimizando MAE. Luego evalúa sobre un test set del 20\% y reporta MAE, RMSE y $R^2$. Además, imprime las mejores y peores predicciones individuales para facilitar el análisis de errores.
 
+Dentro del folder de training, en el README.MD file, se indican las instrucciones para correr el script de entrenamiento y setear variables de ambiente que permiten hacer el upload del modelo en W\&B logueando de forma transparente al usuario a dicho repositorio de modelos.
+
+Al ejecutar el entrenamiento del ElasticNet, se imprimen en consola los siguietnes datos:
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/resultados-training.png}
+    \caption{Enter Caption}
+    \label{fig:resultados-training}
+\end{figure}
+
+En donde se indica el error promedio MAE, el error en escala 1-10 puntos(1.09 para el entrenamiento que se muestra), y un rank de las mejores y peores predicciones en test.
+Finalmente en W\&B se publicará el modelo, pero solo será taggeado como Production si el modelo subido tiene el menor MAE entre los modelos que forman parte del registry, caso contrario solo será taggeado como latest. 
+
+
 \subsection{Publicación en W\&B}
 
 La parte más importante del cierre del entrenamiento es la publicación en Weights \& Biases \citep{wandb}. El script consulta el MAE del modelo actualmente en producción antes de decidir si promover el nuevo modelo. Solo asigna el alias \texttt{production} si el nuevo modelo mejora al existente; en caso contrario, lo sube únicamente con \texttt{latest}. Esto evita que un reentrenamiento sobre los mismos datos degrade el modelo productivo.
@@ -410,10 +424,36 @@ Para hostear la landing page se optó por usar AWS ECS sobre AWS Academy \citep{
 Antes de servir la imagen a ECR, se construye localmente a partir del \texttt{Dockerfile}. La imagen contiene el contenido estático de la página web y el web service que oficia de backend, utilizando JavaScript en el frontend y Python FastAPI como web engine.
 
 Una vez levantada la task en ECS, la URL del Load Balancer expone el servicio en Internet. El servicio se conecta a W\&B para descargar el modelo y hacer inferencia. Además, obtiene películas que ofician de input para la inferencia desde TMDB, sitio similar a IMDb que expone una API gratuita. Las películas se cargan a demanda desde una barra de búsqueda y, al seleccionar una película, se compara el score predicho contra el score real.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/w&b-registry.png}
+    \caption{W\&B Model Registry}
+    \label{fig:wandb-registry}
+\end{figure}
+
+\newpage
 Las películas se cargan a demanda en la barra de búsqueda
 
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/landing-expand.png}
+    \caption{Enter Caption}
+    \label{fig:landing-busqueda}
+\end{figure}
+
 Luego al seleccionar una película, se hace la predicción y se compara el score predicho contra el score real de la película en TDMB
-<imagen score>
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/Harry-Potter-Score.png}
+    \caption{Ejemplo de predicción - Harry Potter(2001)}
+    \label{fig:prediccion-harry-potter}
+\end{figure}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/robocop.png}
+    \caption{Ejemplo de predicción - Robocop(2014)}
+    \label{fig:prediccion-robocop}
+\end{figure}
 
 
 \subsection{Predicciones batch}
@@ -423,10 +463,11 @@ Para esto, el pod de ECS hostea un endpoint(/predict-batch) en donde dada una li
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.75\linewidth]{figures/predict-batch.png}
+    \includegraphics[width=0.5\linewidth]{figures/predict-batch.png}
     \caption{Predicción en Batch}
     \label{fig:predict-batch}
 \end{figure}
+
 
 \subsection{Containerización}
 
@@ -497,17 +538,6 @@ Mejoras posibles:
     \item Detectar drift comparando datos nuevos contra datos de entrenamiento.
 \end{itemize}
 
-\section{Trabajo pendiente}
-
-Para completar la solución de punta a punta, quedan pendientes los siguientes puntos:
-
-\begin{enumerate}
-    \item Documentar métricas finales del modelo productivo.
-    \item Incluir capturas del despliegue funcionando.
-    \item Completar la funcionalidad de predicciones batch.
-    \item Agregar tests básicos para ETL y API.
-    \item Registrar drift y métricas operativas del endpoint de predicción.
-\end{enumerate}
 
 \section{Limitaciones del proyecto y arquitectura ideal}
 
@@ -549,6 +579,7 @@ A partir de esa comparación, las mejoras principales para un proyecto ideal ser
     \item \textbf{CI/CD real con GitHub Actions.} Lint, tests unitarios, tests de datos y de modelo, y \texttt{terraform plan} en cada PR; build de imagen, push a ECR con tag por commit, deploy a staging y promoción a producción automática al mergear a main.
     \item \textbf{Cerrar el loop de monitoreo.} Convertir el dashboard de Streamlit, que hoy es de lectura manual, en una fuente de alertas automáticas (CloudWatch Alarms o herramientas como Evidently) que creen notificaciones y puedan disparar un reentrenamiento cuando se detecte drift o degradación de performance.
 \end{itemize}
+
 
 
 
