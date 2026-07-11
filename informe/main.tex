@@ -520,22 +520,35 @@ Esto aplica una buena práctica de seguridad: separar secretos del código fuent
 
 \subsection{Observabilidad y monitoreo}
 
-La solución incluye un primer nivel de observabilidad:
+La solución incorpora observabilidad en dos niveles: monitoreo operativo del servicio desplegado y monitoreo funcional de las predicciones generadas por el modelo. Esto permite revisar si la API está viva, qué versión de modelo está sirviendo y cómo se comportan las predicciones frente al rating real disponible.
+
+\begin{longtable}{p{4.5cm}p{11.5cm}}
+\toprule
+\textbf{Componente} & \textbf{Uso en el proyecto} \\
+\midrule
+\texttt{/status} & Health check de FastAPI. Devuelve si la aplicación está activa y si el modelo productivo fue cargado correctamente. También se usa como health check del Target Group en el Application Load Balancer. \\
+\texttt{/model} & Endpoint para consultar el artifact productivo en W\&B, incluyendo versión, aliases, fecha de creación y URL. Sirve para verificar qué modelo está siendo referenciado por el servicio. \\
+Logs de ECS & Los contenedores envían logs a CloudWatch. Allí quedan registrados eventos de startup, carga de secretos desde SSM, descarga del modelo desde W\&B, errores de conexión con APIs externas y errores de inferencia. \\
+Eventos de predicción & Cada llamada a \texttt{/predict} o \texttt{/predict-batch} genera un evento de predicción mediante \texttt{monitoring/logger.py}. El evento se guarda como JSON en S3 bajo el prefijo \texttt{predictions/}. \\
+Dashboard de monitoreo & \texttt{monitoring/analyze.py} implementa un dashboard en Streamlit que lee esos eventos desde S3 y muestra métricas agregadas, gráficos y predicciones recientes. \\
+\bottomrule
+\end{longtable}
+
+Los eventos de predicción guardan información útil para análisis posterior: timestamp, \texttt{tmdb\_id}, \texttt{imdb\_id}, título, predicción, rating real cuando está disponible, error absoluto, versión del modelo, estrategia del modelo, cantidad de reviews usadas, score VADER y \texttt{log\_votes}. Se guarda un archivo por predicción, lo que evita problemas de concurrencia al escribir desde varias llamadas simultáneas.
+
+El dashboard de Streamlit permite observar el comportamiento del modelo en producción de forma exploratoria. Muestra el total de predicciones, MAE contra el rating real de IMDb/OMDb cuando está disponible, porcentaje de predicciones con error menor a un punto, cantidad de versiones de modelo vistas, dispersión entre predicción y valor real, distribución de errores, MAE móvil por ventana temporal, comparación de MAE por versión de modelo y las predicciones más recientes.
+
+La infraestructura del dashboard también está definida con Terraform dentro de \texttt{infra/observability}. Se crea un repositorio ECR para la imagen de monitoreo, un bucket S3 de observabilidad, un cluster/servicio ECS Fargate para Streamlit, un security group que expone el puerto \texttt{8501} y un log group de CloudWatch con retención de 7 días.
+
+Como decisión práctica para el obligatorio, el bucket de observabilidad se configuró con acceso público de lectura/escritura para simplificar la escritura de eventos desde la API y la lectura desde el dashboard, evitando depender de credenciales temporales en esa parte del flujo. En un entorno productivo real, esta decisión debería reemplazarse por permisos IAM más restrictivos, autenticación del dashboard y una política de retención de datos.
+
+Limitaciones y mejoras pendientes:
 
 \begin{itemize}
-    \item Endpoint \texttt{/status} como health check.
-    \item Logs de contenedor enviados a CloudWatch.
-    \item Consulta de versión del modelo productivo mediante \texttt{/model}.
-\end{itemize}
-
-Mejoras posibles:
-
-\begin{itemize}
-    \item Registrar cantidad de predicciones realizadas.
-    \item Medir latencia del endpoint \texttt{/predict}.
-    \item Guardar errores de inferencia.
-    \item Registrar distribución de features de entrada.
-    \item Detectar drift comparando datos nuevos contra datos de entrenamiento.
+    \item El dashboard es de lectura manual; todavía no dispara alertas automáticas ante drift, errores altos o caída del servicio.
+    \item No se registra latencia por endpoint ni métricas HTTP agregadas como tasa de errores o percentiles de respuesta.
+    \item El drift se analiza de forma indirecta a partir de features registradas y errores observados, pero no hay tests automáticos de drift contra el dataset de entrenamiento.
+    \item La API carga el modelo al iniciar; si cambia el alias \texttt{production} en W\&B, hace falta reiniciar o redeplegar el servicio para asegurar que use la nueva versión.
 \end{itemize}
 
 
