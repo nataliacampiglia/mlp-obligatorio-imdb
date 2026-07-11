@@ -138,32 +138,16 @@ https://www.imdb.com/title/{imdb_id}/reviews/
 
 Esa página de reviews está paginada. Por eso el scraper lee las tarjetas visibles, expande spoilers cuando corresponde y luego intenta avanzar con el botón de ``load more'' hasta alcanzar el máximo configurado de reviews por película o hasta que ya no haya más páginas disponibles. Si no logra obtener reviews desde la página completa, usa como fallback las reviews destacadas que aparecen dentro de la página principal de la película.
 
-Datos recolectados para películas:
+Los datos recolectados se separan en dos entidades principales:
 
-\begin{itemize}
-    \item Identificador IMDb.
-    \item Título.
-    \item Año.
-    \item Rating IMDb.
-    \item Cantidad de votos.
-    \item Géneros.
-    \item Director/es.
-    \item Reparto principal.
-    \item Duración.
-    \item Certificado de edad.
-    \item Metascore.
-    \item Sinopsis.
-\end{itemize}
-
-Datos recolectados para reviews:
-
-\begin{itemize}
-    \item Película asociada.
-    \item Usuario.
-    \item Rating de la review.
-    \item Texto de la review.
-    \item Votos de utilidad.
-\end{itemize}
+\begin{longtable}{p{4cm}p{12cm}}
+\toprule
+\textbf{Entidad} & \textbf{Campos recolectados} \\
+\midrule
+Películas & Identificador IMDb, título, año, rating IMDb, cantidad de votos, géneros, director/es, reparto principal, duración, certificado de edad, metascore y sinopsis. \\
+Reviews & Película asociada, usuario, rating de la review, texto de la review y votos de utilidad. \\
+\bottomrule
+\end{longtable}
 
 El scraper contempla que IMDb puede requerir login para acceder a reviews completas. Para eso existe un flujo manual que guarda una sesión local y permite reutilizarla en corridas posteriores.
 
@@ -216,6 +200,23 @@ Para eso se aplica VADER, a través de la librería \texttt{vaderSentiment}. Se 
 
 Finalmente, esa señal agregada se une al dataset de películas. Si una película no tiene reviews válidas, simplemente queda sin esa feature y el pipeline de entrenamiento se encarga de imputarla.
 
+El resultado del ETL es un JSON procesado con una fila por película y los campos necesarios para entrenamiento:
+
+\begin{longtable}{p{5cm}p{11cm}}
+\toprule
+\textbf{Campo del JSON procesado} & \textbf{Descripción} \\
+\midrule
+\texttt{imdb\_id} & Identificador de IMDb; se conserva para trazabilidad, pero no entra al modelo. \\
+\texttt{title} & Título de la película. \\
+\texttt{year} & Año de estreno. \\
+\texttt{votes} & Cantidad de votos. \\
+\texttt{directors} & Lista normalizada de directores. \\
+\texttt{main\_cast} & Lista normalizada de actores principales. \\
+\texttt{reviews} & Sentimiento promedio de reviews calculado con VADER y normalizado a escala 0--1. \\
+\texttt{imdb\_rating} & Variable objetivo, normalizada a escala 0--1. \\
+\bottomrule
+\end{longtable}
+
 \subsection{Logs y diagnóstico del proceso}
 
 Tanto el scraper como el ETL incorporan logs para seguir la corrida completa y detectar problemas temprano. En el scraper se usa un logger propio que escribe tanto en consola como en archivos diarios dentro de \texttt{data/logs/}. Al comenzar, registra el rango de IDs aleatorios que va a intentar, la cantidad máxima de películas y la cantidad máxima de reviews por película. Esto permite reproducir el contexto de una corrida y entender si el volumen obtenido coincide con la configuración esperada.
@@ -232,20 +233,14 @@ Durante la lectura imprime la cantidad de filas crudas de películas y reviews. 
 
 Luego de deduplicar, el ETL informa cuántas películas quedan y muestra un resumen de nulos por dataset. Esto ayuda a identificar columnas incompletas, problemas del scraper o señales que luego habrá que imputar. Al final, informa cuántas filas sin \texttt{imdb\_rating} se eliminaron, cuántas películas quedan en el dataset final y si todavía existen columnas con nulos. Con esa información se pueden sacar conclusiones simples antes de entrenar, por ejemplo si el dataset tiene pocas reviews útiles, si hay muchos registros sin target o si la extracción necesita repetirse.
 
-\begin{longtable}{p{5cm}p{11cm}}
-\toprule
-\textbf{Campo del JSON procesado} & \textbf{Descripción} \\
-\midrule
-\texttt{imdb\_id} & Identificador de IMDb; se conserva para trazabilidad, pero no entra al modelo. \\
-\texttt{title} & Título de la película. \\
-\texttt{year} & Año de estreno. \\
-\texttt{votes} & Cantidad de votos. \\
-\texttt{directors} & Lista normalizada de directores. \\
-\texttt{main\_cast} & Lista normalizada de actores principales. \\
-\texttt{reviews} & Sentimiento promedio de reviews calculado con VADER y normalizado a escala 0--1. \\
-\texttt{imdb\_rating} & Variable objetivo, normalizada a escala 0--1. \\
-\bottomrule
-\end{longtable}
+\subsection{Limitantes}
+
+Durante la recolección aparecieron algunas limitantes operativas. La primera fue que el scraping de reviews requería iniciar sesión en IMDb para acceder a la página completa de comentarios. Por eso se incorporó un paso de login manual y reutilización de sesión local; sin esa sesión, el scraper podía quedar limitado a las reviews destacadas disponibles en la página principal de la película.
+
+Otra limitante fue la duración de las credenciales temporales de AWS Academy/Learner Lab. Como esas credenciales vencen en cuestión de algunas horas, las corridas se acotaron a volúmenes manejables, por ejemplo de a 500 reviews. Cuando se intentaba aumentar demasiado el volumen de scraping, podía pasar que al momento de guardar los datos en S3 las credenciales ya hubieran expirado, obligando a renovar credenciales y repetir parte del proceso.
+
+Por último, al trabajar con una cuenta de Amazon Academy, no se logró dejar los datos de S3 accesibles para otros compañeros de forma simple. Esto limitó el uso compartido directo del bucket y reforzó la necesidad de documentar bien las rutas, corridas y archivos generados.
+
 
 \section{Entrenamiento}
 
@@ -415,10 +410,23 @@ Para hostear la landing page se optó por usar AWS ECS sobre AWS Academy \citep{
 Antes de servir la imagen a ECR, se construye localmente a partir del \texttt{Dockerfile}. La imagen contiene el contenido estático de la página web y el web service que oficia de backend, utilizando JavaScript en el frontend y Python FastAPI como web engine.
 
 Una vez levantada la task en ECS, la URL del Load Balancer expone el servicio en Internet. El servicio se conecta a W\&B para descargar el modelo y hacer inferencia. Además, obtiene películas que ofician de input para la inferencia desde TMDB, sitio similar a IMDb que expone una API gratuita. Las películas se cargan a demanda desde una barra de búsqueda y, al seleccionar una película, se compara el score predicho contra el score real.
+Las películas se cargan a demanda en la barra de búsqueda
+
+Luego al seleccionar una película, se hace la predicción y se compara el score predicho contra el score real de la película en TDMB
+<imagen score>
+
 
 \subsection{Predicciones batch}
 
 Además de predicciones individuales por medio de la landing page, se deja planteado exponer predicciones en modo batch. Esta funcionalidad permitiría recibir un conjunto de películas, ejecutar inferencia sobre todas ellas y devolver un archivo o respuesta agregada con los ratings estimados.
+Para esto, el pod de ECS hostea un endpoint(/predict-batch) en donde dada una lista de identificadores de películas extraídos de TMDB, por ejemplo, ${"tmdb\_ids": [27205, 155, 550]}$, el servicio retorna las predicciones para cada película incluyendo el rate real de la película en IMDB.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{figures/predict-batch.png}
+    \caption{Predicción en Batch}
+    \label{fig:predict-batch}
+\end{figure}
 
 \subsection{Containerización}
 
@@ -500,6 +508,49 @@ Para completar la solución de punta a punta, quedan pendientes los siguientes p
     \item Agregar tests básicos para ETL y API.
     \item Registrar drift y métricas operativas del endpoint de predicción.
 \end{enumerate}
+
+\section{Limitaciones del proyecto y arquitectura ideal}
+
+\subsection{Limitantes}
+
+Más allá de las limitantes puntuales ya mencionadas en la recolección de datos, el proyecto tuvo una restricción transversal que condicionó buena parte de las decisiones de arquitectura, se trabajó con cuentas individuales de AWS Academy/Learner Lab en lugar de una cuenta o una organización compartida entre los integrantes del equipo.
+
+Esto trajo varias consecuencias prácticas:
+
+\begin{itemize}
+    \item No fue posible compartir directamente buckets de S3, repositorios de ECR ni los servicios de ECS entre integrantes, ya que cada cuenta de Academy es aislada y temporal. Quien avanzaba con una parte de la infraestructura terminaba alojando esos recursos en su propia cuenta.
+    \item El estado de Terraform no pudo centralizarse en un backend remoto compartido, por lo que aplicar infraestructura quedó atado a la persona que la había creado originalmente.
+    \item Los despliegues a ECR/ECS se hicieron de forma manual (\texttt{scripts/push-to-ecr.sh}, \texttt{terraform apply} local) en lugar de a través de un pipeline de CI/CD, porque no había un rol de despliegue ni credenciales de larga duración que todo el equipo pudiera usar de forma segura.
+    \item Las credenciales temporales de Academy expiran en pocas horas, lo que además de limitar el volumen de scraping impidió dejar corriendo procesos programados (schedulers, triggers automáticos) que dependieran de esas credenciales.
+    \item El gate de promoción de modelos que compara MAE contra producción (ver Publicación en W\&B) corre hoy de forma manual/local al ejecutar \texttt{train.py}, y aunque promueva el alias \texttt{production} en W\&B, la API en ECS solo carga el modelo una vez al iniciar (\texttt{deployment/main.py}), por lo que hace falta reiniciar el servicio a mano para que sirva el modelo nuevo.
+\end{itemize}
+
+
+\subsection{Arquitectura ideal}
+
+La Figura \ref{fig:arquitectura-ideal} propone cómo debería quedar la arquitectura si el proyecto se llevara a un entorno real, siguiendo los principios de Continuous Delivery for Machine Learning (CD4ML) \citep{fowler2016cd4ml}. Los componentes marcados en azul con un check ya están implementados en la solución actual, mientras que los marcados en naranja con línea punteada son las piezas que faltarían para alcanzar una solución end to end.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{figures/arquitectura_ideal.png}
+    \caption{Arquitectura ideal propuesta (CD4ML): componentes ya implementados versus componentes faltantes para una solución MLOps completa.}
+    \label{fig:arquitectura-ideal}
+\end{figure}
+
+
+A partir de esa comparación, las mejoras principales para un proyecto ideal serían:
+
+\begin{itemize}
+    \item \textbf{Cuenta/organización de AWS compartida.} Reemplazar las cuentas individuales de Academy por una AWS Organization con cuentas separadas por ambiente (dev/staging/prod) y un rol de CI/CD asumible vía OIDC, de forma que el equipo completo pueda compartir buckets, ECR y el estado de Terraform sin depender de una única persona.
+    \item \textbf{Recolección de datos programada.} Disparar el scraper y el ETL automáticamente (EventBridge, Step Functions o un orquestador como Airflow) en lugar de ejecutarlos manualmente, y agregar un gate de validación de calidad de datos (por ejemplo con Great Expectations) antes de habilitar un dataset para entrenar.
+    \item \textbf{Reentrenamiento automático.} Disparar el pipeline de entrenamiento por schedule o por evento (nuevos datos suficientes, degradación detectada en el monitoreo), en lugar de requerir que alguien lo corra a mano.
+    \item \textbf{Fortalecer el gate de promoción de modelos.} El gate actual (comparar MAE contra el modelo en producción) es un buen punto de partida; se podría extender con tests de comportamiento y por subgrupos, y moverlo a un pipeline de CI en lugar de correr localmente.
+    \item \textbf{Redeploy automático al promover un modelo.} Que la promoción del alias \texttt{production} en W\&B dispare automáticamente un redeploy o reinicio del servicio de ECS, o alternativamente que la API chequee periódicamente si hay un nuevo alias productivo, evitando servir un modelo desactualizado.
+    \item \textbf{CI/CD real con GitHub Actions.} Lint, tests unitarios, tests de datos y de modelo, y \texttt{terraform plan} en cada PR; build de imagen, push a ECR con tag por commit, deploy a staging y promoción a producción automática al mergear a main.
+    \item \textbf{Cerrar el loop de monitoreo.} Convertir el dashboard de Streamlit, que hoy es de lectura manual, en una fuente de alertas automáticas (CloudWatch Alarms o herramientas como Evidently) que creen notificaciones y puedan disparar un reentrenamiento cuando se detecte drift o degradación de performance.
+\end{itemize}
+
+
 
 \section{Conclusiones}
 
