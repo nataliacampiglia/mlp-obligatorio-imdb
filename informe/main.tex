@@ -81,24 +81,6 @@ Además del modelo predictivo, el foco del obligatorio está en construir una ar
 
 \section{Arquitectura general}
 
-La arquitectura propuesta se compone de los siguientes bloques:
-
-\begin{longtable}{p{3cm}p{4cm}p{9cm}}
-\toprule
-\textbf{Componente} & \textbf{Tecnología} & \textbf{Responsabilidad} \\
-\midrule
-Scraper & Python, Playwright & Extraer películas y reviews desde IMDb. \\
-Data lake & AWS S3 & Almacenar datos crudos, procesados y de inferencia. \\
-ETL & Python, pandas, pyarrow & Transformar datos crudos en datasets listos para entrenamiento e inferencia. \\
-Tracking y registry & Weights \& Biases & Registrar experimentos, métricas y modelos. \\
-API & FastAPI & Exponer endpoints para estado, películas, modelo y predicción. \\
-Container & Docker & Empaquetar la aplicación para ejecución reproducible. \\
-Infraestructura & Terraform & Crear recursos cloud de forma declarativa. \\
-Despliegue & AWS ECS Fargate, ECR, ALB & Ejecutar la API en producción. \\
-Logs & AWS CloudWatch & Observar comportamiento de la aplicación. \\
-\bottomrule
-\end{longtable}
-
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.95\textwidth]{figures/arquitectura.png}
@@ -106,9 +88,55 @@ Logs & AWS CloudWatch & Observar comportamiento de la aplicación. \\
     \label{fig:arquitectura-general}
 \end{figure}
 
-\section{Ingesta de datos}
+La Figura \ref{fig:arquitectura-general} resume la solución de punta a punta. El flujo comienza con la extracción de información desde IMDb mediante un scraper desarrollado en Python con Playwright. Ese scraper recolecta datos de películas y reviews, y los persiste en S3 como datos crudos, separados por tipo de entidad y por corrida. Esta primera capa funciona como data lake y permite conservar el historial de extracciones sin sobrescribir resultados anteriores.
+
+Sobre esos datos crudos se ejecuta el proceso ETL, implementado con pandas y pyarrow. El ETL consolida las corridas del scraper, deduplica películas, agrega la señal de sentimiento de reviews y genera los datasets procesados que luego consumen el entrenamiento y la inferencia. De esta forma, la arquitectura separa explícitamente la capa raw de la capa procesada, lo que mejora la trazabilidad y facilita repetir el procesamiento si cambia la lógica de transformación.
+
+Luego, el pipeline de entrenamiento toma el dataset procesado, aplica feature engineering y entrena el modelo predictivo. Los experimentos, métricas y artefactos del modelo se registran en Weights \& Biases, que cumple el rol de tracking y model registry. Desde allí, la aplicación de serving puede recuperar el modelo productivo usando el alias correspondiente.
+
+La parte de serving está implementada con FastAPI y se empaqueta en una imagen Docker. Esa imagen se publica en ECR y se despliega en AWS ECS Fargate detrás de un Application Load Balancer. La infraestructura se define con Terraform, lo que permite recrear el entorno de manera declarativa. Finalmente, los logs de ejecución quedan disponibles en CloudWatch, completando una primera capa de observabilidad para la API desplegada.
+
+
+
+\section{Recolección de datos}
+
+El proceso de recolección y preparación inicial de datos se ejecutó localmente. Para hacerlo repetible, se creó un \texttt{Makefile} que agrupa los comandos principales de setup, credenciales, login en IMDb, ejecución del scraper y corrida del ETL. Esto evita depender de comandos manuales largos y permite correr el flujo completo de forma más ordenada.
+
+\begin{longtable}{p{4cm}p{12cm}}
+\toprule
+\textbf{Comando} & \textbf{Uso} \\
+\midrule
+\texttt{make install} & Instala las dependencias del proyecto con Poetry y descarga Chromium para Playwright. \\
+\texttt{make aws-credentials} & Copia las credenciales del Learner Lab desde el portapapeles y las guarda en \texttt{\textasciitilde{}/.aws/credentials}. \\
+\texttt{make scraper-login} & Abre el navegador para realizar el login manual en IMDb y guardar la sesión local. \\
+\texttt{make scraper-run} & Ejecuta el scraper y sube los datos crudos a S3 en formato Parquet. \\
+\texttt{make etl-run} & Lee los datos crudos desde S3, los procesa y publica el dataset de entrenamiento. \\
+\texttt{make scraper-etl} & Ejecuta en orden el scraper y luego el ETL. \\
+\texttt{make pipeline} & Ejecuta el flujo completo: credenciales, login, scraper y ETL. \\
+\bottomrule
+\end{longtable}
+
+Esta automatización fue especialmente útil porque el scraping requiere pasos locales, como la autenticación manual en IMDb, y pasos cloud, como la escritura de datos en S3 con credenciales temporales de AWS Academy/Learner Lab que expiran y deben renovarse periódicamente. El \texttt{Makefile} deja explícito el orden esperado, reduce errores operativos al repetir corridas y hace que el proceso sea más simple.
+
+\subsection{Ingesta de datos}
 
 La ingesta se realiza con un scraper de IMDb implementado en Python. El scraper obtiene información de películas y reviews, y guarda los resultados en formato local y en S3.
+
+El scraper no parte de una lista fija de películas. En cada corrida genera IDs aleatorios dentro de un rango configurado, con el formato propio de IMDb, por ejemplo \texttt{tt0000001}. Con cada ID arma una URL de título:
+
+\begin{lstlisting}
+https://www.imdb.com/title/{imdb_id}/
+\end{lstlisting}
+
+Luego visita esa página con Playwright, valida que el contenido corresponda a una película y extrae los atributos principales. Si el ID corresponde a otro tipo de contenido o no se encuentra título, se descarta y se continúa con otro ID aleatorio.
+
+Las reviews se obtienen desde una URL aparte. Primero el scraper busca en la página de la película el enlace a la sección de reviews de usuarios; si no lo encuentra, usa por defecto:
+
+\begin{lstlisting}
+https://www.imdb.com/title/{imdb_id}/reviews/
+\end{lstlisting}
+
+Esa página de reviews está paginada. Por eso el scraper lee las tarjetas visibles, expande spoilers cuando corresponde y luego intenta avanzar con el botón de ``load more'' hasta alcanzar el máximo configurado de reviews por película o hasta que ya no haya más páginas disponibles. Si no logra obtener reviews desde la página completa, usa como fallback las reviews destacadas que aparecen dentro de la página principal de la película.
 
 Datos recolectados para películas:
 
@@ -139,17 +167,7 @@ Datos recolectados para reviews:
 
 El scraper contempla que IMDb puede requerir login para acceder a reviews completas. Para eso existe un flujo manual que guarda una sesión local y permite reutilizarla en corridas posteriores.
 
-\subsection{Logs y diagnóstico del scraper}
-
-El scraper también incorpora logs para seguir la corrida y detectar problemas durante la extracción. Se usa un logger propio que escribe tanto en consola como en archivos diarios dentro de \texttt{data/logs/}. Al comenzar, registra el rango de IDs aleatorios que va a intentar, la cantidad máxima de películas y la cantidad máxima de reviews por película. Esto permite reproducir el contexto de una corrida y entender si el volumen obtenido coincide con la configuración esperada.
-
-Durante la autenticación, los logs indican si se reutilizó una sesión guardada, si fue necesario iniciar sesión nuevamente o si el login falló. Esto es importante porque, cuando IMDb bloquea el acceso a la página completa de reviews, el scraper puede quedar limitado a reviews destacadas. Registrar ese estado ayuda a explicar por qué una corrida puede traer menos reviews que otra.
-
-Mientras recorre títulos, el scraper informa cuando descarta un ID porque no corresponde a una película, cuando no encuentra título, o cuando ocurre un error al extraer una película o sus reviews. También registra el progreso de guardado con el ID de IMDb, la cantidad de películas acumuladas y cuántas reviews se obtuvieron. Al final imprime una tabla con las películas guardadas ordenadas por cantidad de reviews y cuenta cuántas películas tienen rating pero no reviews. Esta salida sirve para análisis rápido: permite detectar películas sin señal textual, problemas de acceso a reviews o una muestra demasiado pobre para el ETL.
-
-Finalmente, si S3 está configurado, el scraper registra la subida de los Parquet crudos con la cantidad de películas, cantidad de reviews y \texttt{run\_id}. Si falla el upload, el log lo deja explícito, lo que facilita distinguir entre un problema de scraping y un problema de credenciales o conectividad con AWS.
-
-\section{Almacenamiento y versionado de datos}
+\subsection{Almacenamiento y versionado de datos}
 
 Los datos se almacenan en S3 en formato Parquet. Se eligió Parquet porque es un formato columnar, eficiente para lectura y escritura de datos tabulares, y se integra bien con pandas, pyarrow y servicios cloud como S3. Además, comprime mejor que formatos de texto como CSV o JSON y conserva tipos de datos de forma más robusta, algo útil para una capa raw que luego será procesada por el ETL.
 
@@ -172,7 +190,7 @@ s3://mlp-imdb-data/
 
 Esta organización permite aplicar un concepto importante de MLOps: trazabilidad de datos. Si un modelo fue entrenado con determinada versión del dataset, se puede identificar de qué corridas del scraper provienen los datos.
 
-\section{ETL}
+\subsection{ETL}
 
 El proceso ETL transforma los datos crudos del scraper en un dataset consolidado por película. En la implementación actual, el ETL lee datos desde S3, deduplica películas, agrega una señal de sentimiento a partir de reviews y genera un JSON procesado que luego consume el entrenamiento.
 
@@ -192,25 +210,21 @@ s3://mlp-imdb-data/imdb/processed/training_dataset.json
     \end{lstlisting}
 \end{enumerate}
 
-El punto más importante del ETL es la construcción de \texttt{review\_agg}. El scraper guarda reviews a nivel de comentario, por lo que una misma película puede tener varias filas en el dataset de reviews. Para convertir esa información en una única feature por película, el ETL ejecuta la función \texttt{\_sentimiento\_vader\_por\_pelicula}.
+Una de las transformaciones del ETL es generar \texttt{review\_agg}. Como el scraper guarda varias reviews por película, el ETL resume esos textos en una única señal por \texttt{imdb\_id}.
 
-La herramienta utilizada para el análisis de sentimiento es VADER, mediante la librería \texttt{vaderSentiment}. VADER es un analizador basado en léxico y reglas: no requiere entrenar un modelo propio, sino que asigna polaridad a partir de palabras, intensificadores, negaciones y otros patrones simples del lenguaje. Para este proyecto resulta adecuado por tres motivos. Primero, las reviews de usuarios suelen expresar opinión de forma directa, por lo que una señal de polaridad general es útil como feature agregada. Segundo, es liviano y reproducible: puede ejecutarse dentro del ETL sin infraestructura adicional ni dependencias de modelos grandes. Tercero, devuelve un score numérico fácil de integrar con el resto del dataset.
+Para eso se aplica VADER, a través de la librería \texttt{vaderSentiment}. Se eligió porque es liviano, reproducible y no requiere entrenar un modelo adicional. VADER asigna un score de polaridad a cada review, y luego el ETL calcula el promedio por película.
 
-VADER entrega varios puntajes, pero en este ETL se usa \texttt{compound}, que resume la polaridad global del texto en un valor entre -1 y 1. Un valor cercano a -1 indica una review predominantemente negativa, un valor cercano a 1 indica una review positiva y valores alrededor de 0 indican neutralidad o mezcla de polaridades. Como el target \texttt{imdb\_rating} se normaliza a escala 0--1, también se normaliza el sentimiento para mantener una escala comparable.
+Finalmente, esa señal agregada se une al dataset de películas. Si una película no tiene reviews válidas, simplemente queda sin esa feature y el pipeline de entrenamiento se encarga de imputarla.
 
-Primero se valida que existan las columnas \texttt{movie\_imdb\_id} y \texttt{review\_text}. Si no hay reviews, o si faltan esas columnas, se devuelve un DataFrame vacío con las columnas esperadas: \texttt{imdb\_id} y \texttt{reviews}. Esto permite que el resto del pipeline siga funcionando aunque no haya textos disponibles.
+\subsection{Logs y diagnóstico del proceso}
 
-Luego se toma una copia de \texttt{movie\_imdb\_id} y \texttt{review\_text}, se reemplazan valores nulos por strings vacíos y se eliminan reviews cuyo texto queda vacío después de aplicar \texttt{strip}. Sobre cada texto válido se aplica VADER y se guarda el puntaje \texttt{compound}. Ese valor se normaliza a escala 0--1 con:
+Tanto el scraper como el ETL incorporan logs para seguir la corrida completa y detectar problemas temprano. En el scraper se usa un logger propio que escribe tanto en consola como en archivos diarios dentro de \texttt{data/logs/}. Al comenzar, registra el rango de IDs aleatorios que va a intentar, la cantidad máxima de películas y la cantidad máxima de reviews por película. Esto permite reproducir el contexto de una corrida y entender si el volumen obtenido coincide con la configuración esperada.
 
-\begin{lstlisting}[language=Python]
-reviews["reviews"] = (reviews["vader_compound"] + 1) / 2
-\end{lstlisting}
+Durante la autenticación, los logs indican si se reutilizó una sesión guardada, si fue necesario iniciar sesión nuevamente o si el login falló. Esto es importante porque, cuando IMDb bloquea el acceso a la página completa de reviews, el scraper puede quedar limitado a reviews destacadas. Registrar ese estado ayuda a explicar por qué una corrida puede traer menos reviews que otra.
 
-Finalmente, las reviews se agrupan por película y se calcula el promedio del sentimiento normalizado. Ese resultado es \texttt{review\_agg}: una tabla con una fila por película y una columna \texttt{reviews}.
+Mientras recorre títulos, el scraper informa cuando descarta un ID porque no corresponde a una película, cuando no encuentra título, o cuando ocurre un error al extraer una película o sus reviews. También registra el progreso de guardado con el ID de IMDb, la cantidad de películas acumuladas y cuántas reviews se obtuvieron. Al final imprime una tabla con las películas guardadas ordenadas por cantidad de reviews y cuenta cuántas películas tienen rating pero no reviews. Esta salida sirve para análisis rápido: permite detectar películas sin señal textual, problemas de acceso a reviews o una muestra demasiado pobre para el ETL.
 
-Luego, \texttt{review\_agg} se une al dataset de películas con un \texttt{left join}. Así se conservan también las películas sin reviews válidas; en esos casos, \texttt{reviews} queda vacío y luego el pipeline de entrenamiento lo imputa. La limitación es que se resume toda la opinión de usuarios en un único promedio, pero como primera señal textual es simple y estable.
-
-\subsection{Logs y diagnóstico del ETL}
+Finalmente, si S3 está configurado, el scraper registra la subida de los Parquet crudos con la cantidad de películas, cantidad de reviews y \texttt{run\_id}. Si falla el upload, el log lo deja explícito, lo que facilita distinguir entre un problema de scraping y un problema de credenciales o conectividad con AWS.
 
 El ETL incluye varios mensajes de diagnóstico para detectar problemas temprano y entender la calidad de los datos antes de entrenar. Primero valida que existan archivos en los prefijos de S3 para películas y reviews; si faltan datos o credenciales, muestra un mensaje específico para saber si el problema viene de AWS, del bucket o de una corrida pendiente del scraper.
 
@@ -233,7 +247,11 @@ Luego de deduplicar, el ETL informa cuántas películas quedan y muestra un resu
 \bottomrule
 \end{longtable}
 
-\section{Feature engineering}
+\section{Entrenamiento}
+
+Esta sección describe el flujo completo de entrenamiento del modelo: cómo se transforman los datos procesados en features, cómo se entrena y evalúa el modelo, cómo se publica el artefacto en W\&B y qué controles se consideran para evitar problemas habituales en sistemas de Machine Learning en Producción.
+
+\subsection{Feature engineering}
 
 El feature engineering del modelo ocurre principalmente en \texttt{training/train.py}, después de cargar \texttt{training\_dataset.json}. El ETL deja los datos limpios y agregados; el entrenamiento convierte esos campos en representaciones numéricas aptas para scikit-learn.
 
@@ -253,7 +271,7 @@ Uso de columnas en el entrenamiento actual:
 \bottomrule
 \end{longtable}
 
-\subsection{Feature engineering del entrenamiento actual}
+\subsubsection{Feature engineering del entrenamiento actual}
 
 El documento inicial del proyecto describe una versión de entrenamiento local basada en \texttt{training\_dataset.json}. En esa versión, \texttt{train.py} aplica tres transformaciones principales antes de entrenar. Además, filtra registros sin director, convierte \texttt{reviews}, \texttt{year} y \texttt{votes} a valores numéricos, e imputa y escala las features numéricas dentro del pipeline.
 
@@ -265,7 +283,7 @@ La tercera transformación vectoriza el título de la película con TF-IDF usand
 
 Vale aclarar que esa versión del dataset no incluye algunas columnas que el scraper sí recolecta, como géneros, metascore, certificado de contenido o argumento. Esas features quedan fuera del modelo actual y representan una oportunidad clara de mejora para iteraciones futuras.
 
-\section{Entrenamiento del modelo}
+\subsection{Entrenamiento del modelo}
 
 El entrenamiento actual toma como entrada el archivo local:
 
@@ -321,11 +339,11 @@ La idea es usar aliases para promover modelos:
 \bottomrule
 \end{longtable}
 
-\section{Prevención de data leakage y training-serving skew}
+\subsection{Prevención de data leakage y training-serving skew}
 
 En un sistema de Machine Learning en Producción no alcanza con que el modelo tenga buenas métricas offline. También es necesario asegurar que el modelo no aprenda información que no estaría disponible al momento de predecir y que el procesamiento usado en entrenamiento sea el mismo que se usa en inferencia.
 
-\subsection{Data leakage}
+\subsubsection{Data leakage}
 
 Data leakage ocurre cuando el modelo usa, directa o indirectamente, información del futuro o información demasiado cercana al target. Esto genera métricas artificialmente buenas durante entrenamiento, pero mal desempeño en producción.
 
@@ -344,13 +362,13 @@ Elegir modelo mirando el test final & Usar train/validation para selección y re
 
 Para reviews, una decisión importante es distinguir entre predicción pre-estreno o temprana, donde no deberían usarse reviews de usuarios, y predicción post-estreno, donde pueden usarse siempre que se registre la fecha de corte.
 
-\subsection{Training-serving skew}
+\subsubsection{Training-serving skew}
 
 Training-serving skew ocurre cuando los datos que recibe el modelo en producción no pasan por el mismo procesamiento que los datos usados para entrenar. Para reducir este riesgo, la aplicación en producción no reconstruye features manualmente. En su lugar, la UI muestra una lista de películas disponibles y, cuando el usuario selecciona una, la API obtiene los datos ya procesados desde \texttt{inference\_dataset.json}.
 
 Ese JSON de inferencia debería generarse con el mismo ETL que produce \texttt{training\_dataset.json}. Por lo tanto, las columnas derivadas, codificaciones, agregaciones de reviews, tratamiento de nulos y tipos de datos nacen del mismo proceso usado para entrenar.
 
-\section{Trazabilidad de ML}
+\subsection{Trazabilidad de ML}
 
 La trazabilidad permite reconstruir qué datos, código, parámetros y modelo participaron en una predicción o en una versión publicada. En este proyecto se considera versionar experimentos, modelos y datos.
 
@@ -368,7 +386,11 @@ Datos de inferencia & \texttt{inference\_dataset.json} generado por el ETL & Ase
 
 Para que la trazabilidad sea completa, cada corrida de entrenamiento debería guardar el dataset usado, fecha y versión del ETL, parámetros del modelo, métricas, commit de Git, artifact del modelo y lista de features esperadas.
 
-\section{Serving del modelo}
+\section{Servicio/API}
+
+La capa de servicio expone el modelo entrenado para ser consumido desde una aplicación web y desde endpoints HTTP. Está implementada con FastAPI, carga el modelo productivo desde W\&B y utiliza datos procesados para devolver predicciones de rating de forma consistente con el entrenamiento.
+
+\subsection{API de inferencia}
 
 La aplicación de serving está implementada con FastAPI \citep{fastapi}. Actualmente expone endpoints para:
 
@@ -398,7 +420,7 @@ Una vez levantada la task en ECS, la URL del Load Balancer expone el servicio en
 
 Además de predicciones individuales por medio de la landing page, se deja planteado exponer predicciones en modo batch. Esta funcionalidad permitiría recibir un conjunto de películas, ejecutar inferencia sobre todas ellas y devolver un archivo o respuesta agregada con los ratings estimados.
 
-\section{Containerización}
+\subsection{Containerización}
 
 La aplicación se empaqueta con Docker usando una imagen base de Python. El contenedor instala las dependencias, copia la aplicación FastAPI y expone el puerto 8000. Esto permite ejecutar el mismo artefacto en local y en producción, reduciendo diferencias entre ambientes.
 
@@ -406,7 +428,11 @@ La aplicación se empaqueta con Docker usando una imagen base de Python. El cont
 docker compose up --build
 \end{lstlisting}
 
-\section{Infraestructura como código}
+\section{Infraestructura y monitoreo}
+
+La infraestructura productiva se define sobre AWS y busca que el despliegue sea repetible, observable y separado de la configuración sensible. En este bloque se agrupan la definición de infraestructura, la gestión de secretos, los mecanismos de monitoreo y la automatización operativa del proyecto.
+
+\subsection{Infraestructura como código}
 
 La infraestructura cloud se define con Terraform. Esto permite versionar los recursos, recrearlos y documentar la arquitectura de despliegue.
 
@@ -425,7 +451,7 @@ Recursos definidos:
 
 El despliegue usa una imagen Docker publicada en ECR y luego referenciada desde Terraform.
 
-\section{Gestión de secretos}
+\subsection{Gestión de secretos}
 
 La API necesita credenciales para consultar W\&B. Para evitar hardcodear secretos, se usa AWS SSM Parameter Store.
 
@@ -443,7 +469,7 @@ WANDB_API_KEY
 
 Esto aplica una buena práctica de seguridad: separar secretos del código fuente.
 
-\section{Observabilidad y monitoreo}
+\subsection{Observabilidad y monitoreo}
 
 La solución incluye un primer nivel de observabilidad:
 
@@ -463,22 +489,23 @@ Mejoras posibles:
     \item Detectar drift comparando datos nuevos contra datos de entrenamiento.
 \end{itemize}
 
-\section{Automatización}
+\section{Trabajo pendiente}
 
-El proyecto incluye un \texttt{Makefile} para automatizar tareas frecuentes.
+Para completar la solución de punta a punta, quedan pendientes los siguientes puntos:
 
-\begin{lstlisting}
-make scraper-install
-make scraper-login
-make scraper-run
-make etl-run
-make scraper-etl
-make pipeline
-\end{lstlisting}
+\begin{enumerate}
+    \item Documentar métricas finales del modelo productivo.
+    \item Incluir capturas del despliegue funcionando.
+    \item Completar la funcionalidad de predicciones batch.
+    \item Agregar tests básicos para ETL y API.
+    \item Registrar drift y métricas operativas del endpoint de predicción.
+\end{enumerate}
 
-Esto permite ejecutar el flujo de ingesta y procesamiento de forma más ordenada y repetible.
+\section{Conclusiones}
 
-\section{Conceptos de clase aplicados}
+El proyecto construye una base sólida para una solución de Machine Learning en Producción. No solo contempla el modelo, sino también los elementos necesarios para operarlo: datos versionados, procesamiento automatizado, empaquetado, infraestructura reproducible, despliegue cloud y registro de modelos.
+
+Como cierre, la siguiente tabla resume los principales conceptos de clase aplicados en el proyecto:
 
 \begin{longtable}{p{5cm}p{11cm}}
 \toprule
@@ -501,22 +528,6 @@ Observabilidad & Health check y CloudWatch logs. \\
 Despliegue cloud & ECS Fargate + ALB. \\
 \bottomrule
 \end{longtable}
-
-\section{Trabajo pendiente}
-
-Para completar la solución de punta a punta, quedan pendientes los siguientes puntos:
-
-\begin{enumerate}
-    \item Documentar métricas finales del modelo productivo.
-    \item Incluir capturas del despliegue funcionando.
-    \item Completar la funcionalidad de predicciones batch.
-    \item Agregar tests básicos para ETL y API.
-    \item Registrar drift y métricas operativas del endpoint de predicción.
-\end{enumerate}
-
-\section{Conclusiones}
-
-El proyecto construye una base sólida para una solución de Machine Learning en Producción. No solo contempla el modelo, sino también los elementos necesarios para operarlo: datos versionados, procesamiento automatizado, empaquetado, infraestructura reproducible, despliegue cloud y registro de modelos.
 
 La principal mejora para cerrar el ciclo MLOps completo es consolidar el entrenamiento productivo con el dataset procesado en S3, publicar métricas finales y terminar el flujo de predicciones batch. Aun así, la arquitectura actual ya refleja los componentes centrales de una solución MLOps: ingestión, procesamiento, entrenamiento, registry, serving, despliegue y observabilidad.
 
