@@ -7,11 +7,18 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
-from imdb_rating.schemas import PredictRequest, PredictionOutput
+from imdb_rating.schemas import (
+    PredictRequest,
+    PredictionOutput,
+    PredictBatchRequest,
+    PredictBatchItem,
+    PredictBatchResponse,
+)
 from imdb_rating.registry import load as load_model_from_registry, get_production_metadata
 
 from external_apis import get_movie_with_credits, get_imdb_rating_and_votes, get_movie_review_texts
 from features import build_features, compute_vader_score
+from monitoring.logger import log_prediction
 import imdb_rating.transformers  # noqa: F401 — ensures pipe_tokenizer is importable on deserialization
 
 
@@ -132,15 +139,9 @@ def get_production_model():
         raise HTTPException(status_code=502, detail=f"Error al conectar con W&B: {e}")
 
 
-@app.post("/predict", response_model=PredictionOutput)
-def predict(payload: PredictRequest) -> PredictionOutput:
-    if _MODEL is None or _MODEL_VERSION is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-
-    try:
-        movie = get_movie_with_credits(payload.tmdb_id)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"TMDb fetch failed: {e}")
+def _predict_one(tmdb_id: int) -> PredictionOutput:
+    """Fetch external data, build features, predict and log. Raises on TMDb failure."""
+    movie = get_movie_with_credits(tmdb_id)
 
     imdb_id = movie.get("imdb_id")
     real_rating, imdb_votes = (None, None)
@@ -157,10 +158,10 @@ def predict(payload: PredictRequest) -> PredictionOutput:
     raw = float(_MODEL.predict(pd.DataFrame([features]))[0])
     prediction = round(max(1.0, min(10.0, raw * 10)), 1)
 
-    print(f"[predict] tmdb={payload.tmdb_id} imdb={imdb_id} pred={prediction} real={real_rating} reviews_n={len(review_texts)} vader={reviews_score:.3f}")
+    print(f"[predict] tmdb={tmdb_id} imdb={imdb_id} pred={prediction} real={real_rating} reviews_n={len(review_texts)} vader={reviews_score:.3f}")
 
     log_prediction(
-        tmdb_id=payload.tmdb_id,
+        tmdb_id=tmdb_id,
         imdb_id=imdb_id,
         movie_title=movie.get("title", ""),
         prediction=prediction,
@@ -180,3 +181,27 @@ def predict(payload: PredictRequest) -> PredictionOutput:
         imdb_id=imdb_id,
         model_version=_MODEL_VERSION,
     )
+
+
+@app.post("/predict", response_model=PredictionOutput)
+def predict(payload: PredictRequest) -> PredictionOutput:
+    if _MODEL is None or _MODEL_VERSION is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    try:
+        return _predict_one(payload.tmdb_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Prediction failed: {e}")
+
+
+@app.post("/predict-batch", response_model=PredictBatchResponse)
+def predict_batch(payload: PredictBatchRequest) -> PredictBatchResponse:
+    if _MODEL is None or _MODEL_VERSION is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    items: list[PredictBatchItem] = []
+    for tmdb_id in payload.tmdb_ids:
+        try:
+            items.append(PredictBatchItem(tmdb_id=tmdb_id, prediction=_predict_one(tmdb_id)))
+        except Exception as e:
+            items.append(PredictBatchItem(tmdb_id=tmdb_id, error=str(e)))
+    return PredictBatchResponse(items=items)
