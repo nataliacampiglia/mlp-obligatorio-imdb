@@ -15,6 +15,7 @@ COPY src/ ./src/
 
 RUN poetry install --only main,deployment --no-interaction --no-ansi
 
+COPY monitoring/ ./monitoring/
 COPY deployment/ .
 
 EXPOSE 8000

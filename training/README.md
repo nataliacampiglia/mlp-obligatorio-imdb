@@ -13,7 +13,7 @@ wandb login                          # paste your personal W&B API key
 export WANDB_ENTITY=mlprod-obli      # team in W&B
 export WANDB_PROJECT=imdb-rating
 
-python training/train.py
+poetry run python training/train.py 
 ```
 
 Expected tail of the output:
