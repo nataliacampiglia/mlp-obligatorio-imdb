@@ -65,7 +65,7 @@ El proyecto implementa una solución de Machine Learning en Producción para pre
     \centering
     \includegraphics[width=0.5\linewidth]{figures/Gemini_Generated_Image_jz9hwzjz9hwzjz9h.png}
     \caption{Flujo principal}
-    \label{fig:flujo-principal}
+    \label{fig:placeholder}
 \end{figure}
 
 
@@ -100,6 +100,7 @@ La parte de serving está implementada con FastAPI y se empaqueta en una imagen 
 \section{Recolección de datos}
 
 El proceso de recolección y preparación inicial de datos se ejecutó localmente. Para hacerlo repetible, se creó un \texttt{Makefile} que agrupa los comandos principales de setup, credenciales, login en IMDb, ejecución del scraper y corrida del ETL. Esto evita depender de comandos manuales largos y permite correr el flujo completo de forma más ordenada.
+
 
 \begin{longtable}{p{4cm}p{12cm}}
 \toprule
@@ -226,6 +227,7 @@ Durante la autenticación, los logs indican si se reutilizó una sesión guardad
 Mientras recorre títulos, el scraper informa cuando descarta un ID porque no corresponde a una película, cuando no encuentra título, o cuando ocurre un error al extraer una película o sus reviews. También registra el progreso de guardado con el ID de IMDb, la cantidad de películas acumuladas y cuántas reviews se obtuvieron. Al final imprime una tabla con las películas guardadas ordenadas por cantidad de reviews y cuenta cuántas películas tienen rating pero no reviews. Esta salida sirve para análisis rápido: permite detectar películas sin señal textual, problemas de acceso a reviews o una muestra demasiado pobre para el ETL.
 
 Finalmente, si S3 está configurado, el scraper registra la subida de los Parquet crudos con la cantidad de películas, cantidad de reviews y \texttt{run\_id}. Si falla el upload, el log lo deja explícito, lo que facilita distinguir entre un problema de scraping y un problema de credenciales o conectividad con AWS.
+La ventaja de subir datos scrapeados en formato Parquet es que si en el futuro se desea conectar el bucket a un Data Warehouse(ej Redshift, Snowflake, Databricks SQL) mapeando dicho bucket a una tabla externa, esto permite poder resolver queries en forma más performante ya que Parquet ayuda con la compresión de los datos.
 
 El ETL incluye varios mensajes de diagnóstico para detectar problemas temprano y entender la calidad de los datos antes de entrenar. Primero valida que existan archivos en los prefijos de S3 para películas y reviews; si faltan datos o credenciales, muestra un mensaje específico para saber si el problema viene de AWS, del bucket o de una corrida pendiente del scraper.
 
@@ -241,7 +243,7 @@ Otra limitante fue la duración de las credenciales temporales de AWS Academy/Le
 
 Por último, al trabajar con una cuenta de Amazon Academy, no se logró dejar los datos de S3 accesibles para otros compañeros de forma simple. Esto limitó el uso compartido directo del bucket y reforzó la necesidad de documentar bien las rutas, corridas y archivos generados.
 
-
+\newpage
 \section{Entrenamiento}
 
 Esta sección describe el flujo completo de entrenamiento del modelo: cómo se transforman los datos procesados en features, cómo se entrena y evalúa el modelo, cómo se publica el artefacto en W\&B y qué controles se consideran para evitar problemas habituales en sistemas de Machine Learning en Producción.
@@ -313,8 +315,8 @@ Al ejecutar el entrenamiento del ElasticNet, se imprimen en consola los siguietn
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.5\linewidth]{figures/resultados-training.png}
-    \caption{Enter Caption}
-    \label{fig:resultados-training}
+    \caption{training logs}
+    \label{fig:placeholder}
 \end{figure}
 
 En donde se indica el error promedio MAE, el error en escala 1-10 puntos(1.09 para el entrenamiento que se muestra), y un rank de las mejores y peores predicciones en test.
@@ -395,6 +397,7 @@ Datos de inferencia & \texttt{inference\_dataset.json} generado por el ETL & Ase
 
 Para que la trazabilidad sea completa, cada corrida de entrenamiento debería guardar el dataset usado, fecha y versión del ETL, parámetros del modelo, métricas, commit de Git, artifact del modelo y lista de features esperadas.
 
+\newpage
 \section{Servicio/API}
 
 La capa de servicio expone el modelo entrenado para ser consumido desde una aplicación web y desde endpoints HTTP. Está implementada con FastAPI, carga el modelo productivo desde W\&B y utiliza datos procesados para devolver predicciones de rating de forma consistente con el entrenamiento.
@@ -428,7 +431,7 @@ Una vez levantada la task en ECS, la URL del Load Balancer expone el servicio en
     \centering
     \includegraphics[width=0.5\linewidth]{figures/w&b-registry.png}
     \caption{W\&B Model Registry}
-    \label{fig:wandb-registry}
+    \label{fig:placeholder}
 \end{figure}
 
 \newpage
@@ -438,7 +441,7 @@ Las películas se cargan a demanda en la barra de búsqueda
     \centering
     \includegraphics[width=0.5\linewidth]{figures/landing-expand.png}
     \caption{Enter Caption}
-    \label{fig:landing-busqueda}
+    \label{fig:placeholder}
 \end{figure}
 
 Luego al seleccionar una película, se hace la predicción y se compara el score predicho contra el score real de la película en TDMB
@@ -446,13 +449,13 @@ Luego al seleccionar una película, se hace la predicción y se compara el score
     \centering
     \includegraphics[width=0.5\linewidth]{figures/Harry-Potter-Score.png}
     \caption{Ejemplo de predicción - Harry Potter(2001)}
-    \label{fig:prediccion-harry-potter}
+    \label{fig:placeholder}
 \end{figure}
 \begin{figure}[H]
     \centering
     \includegraphics[width=0.5\linewidth]{figures/robocop.png}
     \caption{Ejemplo de predicción - Robocop(2014)}
-    \label{fig:prediccion-robocop}
+    \label{fig:placeholder}
 \end{figure}
 
 
@@ -477,9 +480,10 @@ La aplicación se empaqueta con Docker usando una imagen base de Python. El cont
 docker compose up --build
 \end{lstlisting}
 
+\newpage
 \section{Infraestructura y monitoreo}
 
-La infraestructura productiva se define sobre AWS y busca que el despliegue sea repetible, observable y separado de la configuración sensible. En este bloque se agrupan la definición de infraestructura, la gestión de secretos, los mecanismos de monitoreo y la automatización operativa del proyecto.
+La infraestructura productiva para el hosting de la Landing Page se define sobre AWS y busca que el despliegue sea repetible, observable y separado de la configuración sensible. En este bloque se agrupan la definición de infraestructura, la gestión de secretos, los mecanismos de monitoreo y la automatización operativa del proyecto.
 
 \subsection{Infraestructura como código}
 
@@ -498,23 +502,83 @@ Recursos definidos:
     \item Política de acceso a S3 para la task.
 \end{itemize}
 
-El despliegue usa una imagen Docker publicada en ECR y luego referenciada desde Terraform.
+Para hostear la landing page se optó por usar AWS ECS sobre AWS Academy, en donde detrás de un Load Balancer vive un pod que es construído mediante una imagen publicada en AWS ECR, la cual se pushea localmente usando el AWS CLI.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/docker-build.png}
+    \caption{Build local de la imagen Docker}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/docker-push.png}
+    \caption{Push de la imagen Docker hacia AWS ECR}
+    \label{fig:placeholder}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/ecr.png}
+    \caption{imagen de ECR pusheada como latest}
+    \label{fig:placeholder}
+\end{figure}
+
+Para construir componentes en la nube(IaC), la herramienta elegida fue Terraform, la cual usando las claves de la cuenta de AWS Academy es capaz de crear, actualizar y destruir recursos en dicha cuenta. 
+
+A partir del script \textbf{push-to-ecr.sh}, se crea el repositorio de imágenes dentro de ECR, luego se buildea la imagen y se pushea a dicho repositorio. Acto seguido, se procede a correr el comando 
+"terraform apply" para construir el resto de la infra(incluído el repositorio de imágenes si es que no existía anteriormente).
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/terrafor-apply.png}
+    \caption{Terraform apply - Se crean los recursos}
+    \label{fig:placeholder}
+\end{figure}
+
+
+Finalmente, cuando la task se encuentra "running" sabemos que la Landing Page ya se encuentra operativa.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/ecs-up.png}
+    \caption{Task de ECS ya levantada}
+    \label{fig:placeholder}
+\end{figure}
+
+
+
+
 
 \subsection{Gestión de secretos}
 
-La API necesita credenciales para consultar W\&B. Para evitar hardcodear secretos, se usa AWS SSM Parameter Store.
+La API necesita credenciales para consultar W\&B y autenticarse contra TMDB. Para evitar hardcodear secretos, se usa AWS SSM Parameter Store.
 
 \begin{lstlisting}
 wandb-org
 wandb-api-key
+omdb-api-key
+tmdb-token
 \end{lstlisting}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/parameter-store.png}
+    \caption{AWS Parameter Store}
+    \label{fig:placeholder}
+\end{figure}
 
 Si no se encuentran en SSM, la aplicación permite usar variables de entorno como fallback:
 
 \begin{lstlisting}
 WANDB_USER
 WANDB_API_KEY
+TMDB_TOKEN
+OMDB_API_KEY
 \end{lstlisting}
+
+
 
 Esto aplica una buena práctica de seguridad: separar secretos del código fuente.
 
@@ -551,7 +615,7 @@ Limitaciones y mejoras pendientes:
     \item La API carga el modelo al iniciar; si cambia el alias \texttt{production} en W\&B, hace falta reiniciar o redeplegar el servicio para asegurar que use la nueva versión.
 \end{itemize}
 
-
+\newpage
 \section{Limitaciones del proyecto y arquitectura ideal}
 
 \subsection{Limitantes}
@@ -594,8 +658,7 @@ A partir de esa comparación, las mejoras principales para un proyecto ideal ser
 \end{itemize}
 
 
-
-
+\newpage
 \section{Conclusiones}
 
 El proyecto construye una base sólida para una solución de Machine Learning en Producción. No solo contempla el modelo, sino también los elementos necesarios para operarlo: datos versionados, procesamiento automatizado, empaquetado, infraestructura reproducible, despliegue cloud y registro de modelos.
