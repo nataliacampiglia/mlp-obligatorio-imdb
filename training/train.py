@@ -18,6 +18,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.impute import SimpleImputer
+from sklearn.feature_selection import SelectKBest, f_regression
 from sklearn.linear_model import ElasticNet
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
@@ -166,6 +167,7 @@ def train_elastic_net():
     model = Pipeline(
         steps=[
             ("preprocessor", preprocessor),
+            ("feature_selection", SelectKBest(f_regression, k=100)),
             ("regressor", elastic_net)
         ]
     )
