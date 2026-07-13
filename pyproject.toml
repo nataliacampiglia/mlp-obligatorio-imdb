@@ -17,6 +17,11 @@ scikit-learn = ">=1.3"
 joblib     = ">=1.3"
 wandb      = ">=0.16"
 
+# ── Training extras (explainability) ─────────────────────────────────────────
+[tool.poetry.group.training.dependencies]
+shap       = ">=0.44"
+matplotlib = ">=3.7"
+
 # ── Scraper ──────────────────────────────────────────────────────────────────
 [tool.poetry.group.scraper.dependencies]
 playwright     = "^1.51.0"
