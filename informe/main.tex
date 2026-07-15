@@ -661,7 +661,11 @@ A partir de esa comparación, las mejoras principales para un proyecto ideal ser
 \newpage
 \section{Conclusiones}
 
-El proyecto construye una base sólida para una solución de Machine Learning en Producción. No solo contempla el modelo, sino también los elementos necesarios para operarlo: datos versionados, procesamiento automatizado, empaquetado, infraestructura reproducible, despliegue cloud y registro de modelos.
+El proyecto permitió construir una solución de Machine Learning en Producción de punta a punta para estimar ratings de películas. El resultado no se limita al entrenamiento de un modelo, sino que integra las piezas necesarias para operar un sistema de ML: recolección de datos, almacenamiento en S3, procesamiento ETL, feature engineering, tracking de experimentos, registry de modelos, API de inferencia, despliegue cloud, gestión de secretos, infraestructura como código y una primera capa de monitoreo.
+
+Uno de los aprendizajes principales fue que, en un sistema productivo, el modelo es solo una parte del problema. Gran parte del esfuerzo estuvo en hacer que los datos fueran trazables, que el procesamiento pudiera repetirse, que el modelo publicado pudiera identificarse mediante W\&B y que la API sirviera predicciones de forma consistente con el entrenamiento. En ese sentido, la separación entre datos crudos y procesados, el uso de Parquet en S3, la generación de datasets de entrenamiento e inferencia, y el empaquetado con Docker aportan una base concreta para reducir deuda técnica y training-serving skew.
+
+También se logró llevar el modelo a un entorno cloud usando AWS ECS Fargate, ECR, Application Load Balancer, Terraform y Parameter Store. Esto permitió ejercitar decisiones propias de MLOps en producción, cómo publicar una imagen, inyectar secretos sin hardcodearlos, exponer health checks, consultar el modelo productivo desde W\&B y registrar eventos de predicción para análisis posterior. La incorporación del dashboard de monitoreo en Streamlit complementa la solución al permitir observar errores, versiones servidas y comportamiento reciente del modelo.
 
 Como cierre, la siguiente tabla resume los principales conceptos de clase aplicados en el proyecto:
 
@@ -680,17 +684,24 @@ Tracking de experimentos & W\&B para métricas y parámetros. \\
 Model registry & Artifacts y aliases en W\&B. \\
 Trazabilidad de ML & Versionado de experimentos, modelos, datos y features usadas. \\
 Serving & FastAPI como API de inferencia. \\
-CI/CD potencial & Build de imagen, push a ECR y deploy con Terraform. \\
+Predicción batch & Endpoint para inferir sobre múltiples películas en una misma solicitud. \\
+CI/CD potencial & Build de imagen, push a ECR y deploy con Terraform ejecutados de forma manual/local. \\
 Gestión de secretos & AWS SSM Parameter Store. \\
-Observabilidad & Health check y CloudWatch logs. \\
+Observabilidad & Health check, CloudWatch logs, eventos de predicción en S3 y dashboard en Streamlit. \\
 Despliegue cloud & ECS Fargate + ALB. \\
 \bottomrule
 \end{longtable}
 
-La principal mejora para cerrar el ciclo MLOps completo es consolidar el entrenamiento productivo con el dataset procesado en S3, publicar métricas finales y terminar el flujo de predicciones batch. Aun así, la arquitectura actual ya refleja los componentes centrales de una solución MLOps: ingestión, procesamiento, entrenamiento, registry, serving, despliegue y observabilidad.
+Las principales limitaciones estuvieron asociadas al contexto académico y operativo, como el uso de cuentas individuales de AWS Academy, credenciales temporales, ausencia de un backend remoto compartido para Terraform, ejecución manual del scraper/ETL/entrenamiento y necesidad de reiniciar el servicio para tomar un nuevo modelo promovido a \texttt{production}. Además, algunas features recolectadas por el scraper, como géneros, duración, certificado, metascore y sinopsis, todavía no se incorporan al dataset final del modelo, por lo que existe margen claro para mejorar la capacidad predictiva.
+
+Como trabajo futuro, la evolución natural sería cerrar el ciclo CD4ML, automatizando la recolección y validación de datos, entrenar desde datasets versionados en S3, ejecutar tests de datos y de modelo en CI, promover modelos mediante gates más completos, redeployar automáticamente cuando cambia el modelo productivo y transformar el monitoreo actual en alertas accionables ante drift o degradación de performance.
+
+En síntesis, la solución implementada cumple el objetivo central del obligatorio, demostrar una arquitectura MLOps funcional que conecta datos, modelo e infraestructura. Aunque todavía no alcanza el nivel de automatización de una plataforma productiva ideal, deja implementados los componentes principales y documenta claramente qué decisiones deberían fortalecerse para llevarla a un entorno real.
+
 
 \newpage
 \bibliographystyle{plainnat}
 \bibliography{Libros}
+
 
 \end{document}
