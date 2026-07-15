@@ -77,6 +77,33 @@ El objetivo es construir una aplicación capaz de estimar el rating esperado de 
 
 Además del modelo predictivo, el foco del obligatorio está en construir una arquitectura productiva alrededor del modelo. Por eso el proyecto no se limita al entrenamiento, sino que incluye ingesta de datos, procesamiento, almacenamiento, despliegue cloud e infraestructura como código.
 
+\section{Requerimientos y decisiones de diseño}
+\label{sec:requerimientos}
+
+La consigna sugiere un problema de clasificación binaria o multiclase, y en sus notas adicionales acepta propuestas distintas al sugerido. En este proyecto se optó por encuadrar el problema como una \textbf{regresión} del \texttt{imdb\_rating} normalizado a $[0, 1]$, y no como una clasificación en buckets. Las razones son que el rating de IMDb es naturalmente continuo, que las métricas relevantes (MAE, RMSE, $R^2$) se leen fácil en la misma escala del target y son las que usa el gate de promoción de modelos en W\&B, y que la misma predicción continua se puede bucketizar \emph{post-hoc} si en algún momento se quisiera reportar métricas de clasificación.
+
+La Tabla~\ref{tab:req-electivos} resume el estado de los requerimientos electivos de la consigna. El resto de los requerimientos mínimos (dataset, ambiente Docker, versionado en Git, API online y batch, plataforma AWS) están cubiertos y detallados en las secciones siguientes.
+
+\begin{longtable}{p{4.5cm}p{2.5cm}p{4.5cm}p{4cm}}
+\caption{Cobertura de requerimientos electivos.}
+\label{tab:req-electivos} \\
+\toprule
+\textbf{Electivo} & \textbf{Estado} & \textbf{Cobertura} & \textbf{Sección} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Electivo} & \textbf{Estado} & \textbf{Cobertura} & \textbf{Sección} \\
+\midrule
+\endhead
+Scraper de datos & Cumplido & Scraper propio con Playwright, subida a S3 en Parquet & Sección~\ref{sec:recoleccion} \\
+Trazabilidad de ML & Cumplido & Experimentos, artifacts y aliases en W\&B; datos versionados en S3 & Sección~\ref{sec:trazabilidad} \\
+Visualización & Cumplido & Dashboard Streamlit sobre bucket público de eventos de predicción & Sección~\ref{sec:observabilidad} \\
+Optimización de modelos & Cumplido & Ajuste de hiperparámetros con \texttt{GridSearchCV} y selección de features con \texttt{SelectKBest} & Sección~\ref{sec:entrenamiento} \\
+Explicabilidad & Cumplido & SHAP con \texttt{LinearExplainer} sobre el modelo entrenado, con summary plot generado por el pipeline & Sección~\ref{sec:explicabilidad} \\
+AutoML & No implementado & --- & --- \\
+\bottomrule
+\end{longtable}
+
 \newpage
 \section{Arquitectura general}
 
@@ -98,6 +125,7 @@ La parte de serving está implementada con FastAPI y se empaqueta en una imagen 
 
 \newpage
 \section{Recolección de datos}
+\label{sec:recoleccion}
 
 El proceso de recolección y preparación inicial de datos se ejecutó localmente. Para hacerlo repetible, se creó un \texttt{Makefile} que agrupa los comandos principales de setup, credenciales, login en IMDb, ejecución del scraper y corrida del ETL. Esto evita depender de comandos manuales largos y permite correr el flujo completo de forma más ordenada.
 
@@ -235,6 +263,11 @@ Durante la lectura imprime la cantidad de filas crudas de películas y reviews. 
 
 Luego de deduplicar, el ETL informa cuántas películas quedan y muestra un resumen de nulos por dataset. Esto ayuda a identificar columnas incompletas, problemas del scraper o señales que luego habrá que imputar. Al final, informa cuántas filas sin \texttt{imdb\_rating} se eliminaron, cuántas películas quedan en el dataset final y si todavía existen columnas con nulos. Con esa información se pueden sacar conclusiones simples antes de entrenar, por ejemplo si el dataset tiene pocas reviews útiles, si hay muchos registros sin target o si la extracción necesita repetirse.
 
+\subsection{Análisis exploratorio}
+\label{sec:eda}
+
+El dataset producido por el ETL (\texttt{training\_dataset.json}) contiene $2.138$ películas con ocho campos: \texttt{imdb\_id}, \texttt{title}, \texttt{year}, \texttt{imdb\_rating}, \texttt{votes}, \texttt{directors}, \texttt{main\_cast} y \texttt{reviews}. Combina datos no estructurados y datos tabulares: los textos de reviews de usuarios scrapeadas de IMDb se transforman a una señal numérica agregada mediante análisis de sentimiento con VADER, y los títulos entran al pipeline como vectores TF-IDF con unigramas y bigramas; en paralelo, se usa el año de estreno, la cantidad de votos (transformada con \texttt{log1p} por su fuerte sesgo, con mediana $40$ y máximo cercano a $891\text{k}$) y listas de directores y elenco principal codificadas como multi-hot. El target \texttt{imdb\_rating} está normalizado a $[0, 1]$, con media $\approx 0.64$, mediana $0.65$ y desviación estándar $0.14$. La señal derivada de reviews está presente en el $46.4\%$ del dataset y se imputa con la mediana en el pipeline de entrenamiento.
+
 \subsection{Limitantes}
 
 Durante la recolección aparecieron algunas limitantes operativas. La primera fue que el scraping de reviews requería iniciar sesión en IMDb para acceder a la página completa de comentarios. Por eso se incorporó un paso de login manual y reutilización de sesión local; sin esa sesión, el scraper podía quedar limitado a las reviews destacadas disponibles en la página principal de la película.
@@ -245,6 +278,7 @@ Por último, al trabajar con una cuenta de Amazon Academy, no se logró dejar lo
 
 \newpage
 \section{Entrenamiento}
+\label{sec:entrenamiento}
 
 Esta sección describe el flujo completo de entrenamiento del modelo: cómo se transforman los datos procesados en features, cómo se entrena y evalúa el modelo, cómo se publica el artefacto en W\&B y qué controles se consideran para evitar problemas habituales en sistemas de Machine Learning en Producción.
 
@@ -309,6 +343,8 @@ Como primera aproximación se pueden usar modelos de regresión como Linear Regr
 
 El script \texttt{train.py} lee la data procesada, aplica feature engineering y busca los mejores hiperparámetros \texttt{alpha} y \texttt{l1\_ratio} mediante \texttt{GridSearchCV} con validación cruzada de 5 folds, optimizando MAE. Luego evalúa sobre un test set del 20\% y reporta MAE, RMSE y $R^2$. Además, imprime las mejores y peores predicciones individuales para facilitar el análisis de errores.
 
+Entre el \texttt{ColumnTransformer} y el regresor se incluye un paso de selección automática de features con \texttt{SelectKBest(f\_regression, k=100)}. Después del preprocesamiento la matriz de features tiene una dimensionalidad alta, dominada por el vocabulario TF-IDF del título y por la codificación multi-hot de directores y elenco. \texttt{SelectKBest} calcula la asociación estadística de cada feature con el target mediante el estadístico $F$ y conserva las $100$ mejores, lo que reduce el ruido, acota la varianza del modelo lineal y actúa como una forma adicional de regularización complementaria al término $L_1 + L_2$ de ElasticNet.
+
 Dentro del folder de training, en el README.MD file, se indican las instrucciones para correr el script de entrenamiento y setear variables de ambiente que permiten hacer el upload del modelo en W\&B logueando de forma transparente al usuario a dicho repositorio de modelos.
 
 Al ejecutar el entrenamiento del ElasticNet, se imprimen en consola los siguietnes datos:
@@ -351,6 +387,7 @@ La idea es usar aliases para promover modelos:
 \end{longtable}
 
 \subsection{Prevención de data leakage y training-serving skew}
+\label{sec:leakage-skew}
 
 En un sistema de Machine Learning en Producción no alcanza con que el modelo tenga buenas métricas offline. También es necesario asegurar que el modelo no aprenda información que no estaría disponible al momento de predecir y que el procesamiento usado en entrenamiento sea el mismo que se usa en inferencia.
 
@@ -380,6 +417,7 @@ Training-serving skew ocurre cuando los datos que recibe el modelo en producció
 Ese JSON de inferencia debería generarse con el mismo ETL que produce \texttt{training\_dataset.json}. Por lo tanto, las columnas derivadas, codificaciones, agregaciones de reviews, tratamiento de nulos y tipos de datos nacen del mismo proceso usado para entrenar.
 
 \subsection{Trazabilidad de ML}
+\label{sec:trazabilidad}
 
 La trazabilidad permite reconstruir qué datos, código, parámetros y modelo participaron en una predicción o en una versión publicada. En este proyecto se considera versionar experimentos, modelos y datos.
 
@@ -396,6 +434,22 @@ Datos de inferencia & \texttt{inference\_dataset.json} generado por el ETL & Ase
 \end{longtable}
 
 Para que la trazabilidad sea completa, cada corrida de entrenamiento debería guardar el dataset usado, fecha y versión del ETL, parámetros del modelo, métricas, commit de Git, artifact del modelo y lista de features esperadas.
+
+\subsection{Explicabilidad}
+\label{sec:explicabilidad}
+
+Para interpretar las predicciones del modelo se aplicó SHAP con \texttt{LinearExplainer}, aprovechando la naturaleza lineal de ElasticNet. La técnica asigna a cada feature una contribución numérica por muestra: los valores positivos empujan la predicción hacia arriba y los negativos hacia abajo, lo que permite tanto un análisis global (ranking de features más influyentes en el modelo) como local (por qué el modelo predice un valor particular para una película específica).
+
+En el pipeline de \texttt{train.py}, después de la evaluación en el test set, se transforma \texttt{X\_test} a través del \texttt{ColumnTransformer} y el paso de \texttt{SelectKBest}, se instancia el explainer sobre el regresor y se genera un summary plot con las 20 features más importantes (Figura~\ref{fig:shap-summary}). La figura resultante se guarda en \texttt{training/shap\_summary.png} y sirve como evidencia de que las señales usadas por el modelo son coherentes con la intuición del dominio: las tres features numéricas (\texttt{year}, \texttt{reviews} agregado por VADER y \texttt{log\_votes}) dominan la magnitud de la contribución, mientras que las features TF-IDF del título aportan un peso residual.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.70\textwidth]{figures/shap_summary.png}
+    \caption{SHAP summary plot con las 20 features más influyentes en las predicciones sobre el test set.}
+    \label{fig:shap-summary}
+\end{figure}
+
+Este análisis complementa las métricas offline al dar visibilidad a qué features están efectivamente impulsando las predicciones, y sirve como base para diagnosticar el training-serving skew observado en producción: si las features que dominan offline no están disponibles o tienen distribuciones distintas en serving, la explicación local ayuda a identificar la causa.
 
 \newpage
 \section{Servicio/API}
@@ -556,9 +610,9 @@ Finalmente, cuando la task se encuentra "running" sabemos que la Landing Page ya
 La API necesita credenciales para consultar W\&B y autenticarse contra TMDB. Para evitar hardcodear secretos, se usa AWS SSM Parameter Store.
 
 \begin{lstlisting}
-wandb-org
+wandb-org=
 wandb-api-key
-omdb-api-key
+omdb-api-key=
 tmdb-token
 \end{lstlisting}
 
@@ -572,10 +626,10 @@ tmdb-token
 Si no se encuentran en SSM, la aplicación permite usar variables de entorno como fallback:
 
 \begin{lstlisting}
-WANDB_USER
-WANDB_API_KEY
-TMDB_TOKEN
-OMDB_API_KEY
+WANDB_USER=mlprod-obli
+WANDB_API_KEY=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
+TMDB_TOKEN=eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI0ZWM0OGRiNGY5ODA1MTA0OTEzNzdmZWI0MjI1YTFjNiIsIm5iZiI6MTc4MTQ1MjE1NC45NzIsInN1YiI6IjZhMmVjZDdhYjgzNmUwMTVjZDAxMDQxMiIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ._eDd5d3g6yKq-D04rgQ9yRHi_kNskmrf32aBGG53v7s
+OMDB_API_KEY=5e2d3c18
 \end{lstlisting}
 
 
@@ -583,6 +637,7 @@ OMDB_API_KEY
 Esto aplica una buena práctica de seguridad: separar secretos del código fuente.
 
 \subsection{Observabilidad y monitoreo}
+\label{sec:observabilidad}
 
 La solución incorpora observabilidad en dos niveles: monitoreo operativo del servicio desplegado y monitoreo funcional de las predicciones generadas por el modelo. Esto permite revisar si la API está viva, qué versión de modelo está sirviendo y cómo se comportan las predicciones frente al rating real disponible.
 
@@ -602,7 +657,14 @@ Los eventos de predicción guardan información útil para análisis posterior: 
 
 El dashboard de Streamlit permite observar el comportamiento del modelo en producción de forma exploratoria. Muestra el total de predicciones, MAE contra el rating real de IMDb/OMDb cuando está disponible, porcentaje de predicciones con error menor a un punto, cantidad de versiones de modelo vistas, dispersión entre predicción y valor real, distribución de errores, MAE móvil por ventana temporal, comparación de MAE por versión de modelo y las predicciones más recientes.
 
-La infraestructura del dashboard también está definida con Terraform dentro de \texttt{infra/observability}. Se crea un repositorio ECR para la imagen de monitoreo, un bucket S3 de observabilidad, un cluster/servicio ECS Fargate para Streamlit, un security group que expone el puerto \texttt{8501} y un log group de CloudWatch con retención de 7 días.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{figures/monitoring.png}
+    \caption{Dashboard de monitoreo en Streamlit.}
+    \label{fig:monitoring-dashboard}
+\end{figure}
+
+El dashboard se distribuye como un contenedor Docker independiente del contenedor de la API, con su propio \texttt{monitoring/Dockerfile} y su propio servicio dentro del \texttt{docker-compose.yml}. Esto le da un ciclo de vida propio: se puede reiniciar, redeployar o apagar sin afectar al servicio de inferencia. La infraestructura del dashboard también está definida con Terraform dentro de \texttt{infra/observability}. Se crea un repositorio ECR para la imagen de monitoreo, un bucket S3 de observabilidad, un cluster/servicio ECS Fargate para Streamlit, un security group que expone el puerto \texttt{8501} y un log group de CloudWatch con retención de 7 días. A diferencia de la API principal, el servicio del dashboard no se expone detrás de un Application Load Balancer: la task se levanta con \texttt{assign\_public\_ip=true} y recibe una IP pública directa. Esta decisión evita el costo fijo mensual del ALB (aproximadamente 18 USD para un servicio de baja utilización) a cambio de dos concesiones aceptadas: la IP pública puede cambiar cada vez que el task reinicia (por ejemplo tras un redeploy) y la exposición es sobre HTTP en el puerto \texttt{8501}, sin TLS. En un entorno productivo estas concesiones se levantarían agregando ALB con certificado HTTPS o un tunnel tipo Cloudflare, junto con autenticación del dashboard.
 
 Como decisión práctica para el obligatorio, el bucket de observabilidad se configuró con acceso público de lectura/escritura para simplificar la escritura de eventos desde la API y la lectura desde el dashboard, evitando depender de credenciales temporales en esa parte del flujo. En un entorno productivo real, esta decisión debería reemplazarse por permisos IAM más restrictivos, autenticación del dashboard y una política de retención de datos.
 
@@ -614,6 +676,19 @@ Limitaciones y mejoras pendientes:
     \item El drift se analiza de forma indirecta a partir de features registradas y errores observados, pero no hay tests automáticos de drift contra el dataset de entrenamiento.
     \item La API carga el modelo al iniciar; si cambia el alias \texttt{production} en W\&B, hace falta reiniciar o redeplegar el servicio para asegurar que use la nueva versión.
 \end{itemize}
+
+\newpage
+\section{Resultados}
+\label{sec:resultados}
+
+La métrica principal para evaluar el modelo es el MAE, coherente con el encuadre del problema como regresión.
+
+\begin{itemize}
+    \item \textbf{MAE offline (test set):} $\approx 1.09$ puntos en escala 1--10, obtenido sobre el 20\% del dataset reservado como test durante el entrenamiento con \texttt{GridSearchCV}.
+    \item \textbf{MAE en producción:} $2.16$ puntos, calculado por el dashboard sobre las $26$ predicciones acumuladas en el bucket de observabilidad al momento de esta entrega.
+\end{itemize}
+
+El error en producción es mayor al observado en test. Esa brecha no es una degradación aleatoria, sino la manifestación empírica del training-serving skew descrito en la Sección~\ref{sec:leakage-skew}: el modelo se entrenó con reviews scrapeadas de IMDb y en producción recibe reviews obtenidas de TMDb, cuya distribución de sentimiento es distinta. Además, la muestra de $26$ predicciones proviene mayormente de películas populares y bien puntuadas, por lo que el sesgo del modelo hacia la media del training amplifica el error observado. Sin el pipeline de observabilidad, esta divergencia habría pasado desapercibida y las métricas offline habrían dado una sensación de éxito injustificada.
 
 \newpage
 \section{Limitaciones del proyecto y arquitectura ideal}
@@ -702,6 +777,5 @@ En síntesis, la solución implementada cumple el objetivo central del obligator
 \newpage
 \bibliographystyle{plainnat}
 \bibliography{Libros}
-
 
 \end{document}
