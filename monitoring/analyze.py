@@ -67,14 +67,12 @@ if df.empty:
 
 with_truth = df.dropna(subset=["real_rating"])
 mae = with_truth["error"].mean() if not with_truth.empty else None
-acc1 = (with_truth["error"] < 1).mean() if not with_truth.empty else None
 versions_active = df["model_version"].nunique()
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 c1.metric("Total predictions", len(df))
 c2.metric("MAE (vs IMDb real)", f"{mae:.2f}" if mae is not None else "—")
-c3.metric("Accuracy ±1 point", f"{acc1 * 100:.1f}%" if acc1 is not None else "—")
-c4.metric("Model versions seen", versions_active)
+c3.metric("Model versions seen", versions_active)
 
 st.divider()
 

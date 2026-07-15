@@ -18,8 +18,14 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import FunctionTransformer
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.impute import SimpleImputer
+from sklearn.feature_selection import SelectKBest, f_regression
 from sklearn.linear_model import ElasticNet
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import shap
 
 
 from imdb_rating.model import ConstantRatingModel
@@ -166,6 +172,7 @@ def train_elastic_net():
     model = Pipeline(
         steps=[
             ("preprocessor", preprocessor),
+            ("feature_selection", SelectKBest(f_regression, k=100)),
             ("regressor", elastic_net)
         ]
     )
@@ -254,7 +261,33 @@ def train_elastic_net():
 
 
     # ============================================================
-    # 10. Publicar modelo en W&B (solo promueve a production si mejora el MAE)
+    # 10. Explicabilidad con SHAP
+    # ============================================================
+
+    transform_only = Pipeline(best_model.steps[:-1])
+    X_test_transformed = transform_only.transform(X_test)
+    if hasattr(X_test_transformed, "toarray"):
+        X_test_transformed = X_test_transformed.toarray()
+
+    all_names = best_model.named_steps["preprocessor"].get_feature_names_out()
+    selected_mask = best_model.named_steps["feature_selection"].get_support()
+    feature_names = list(all_names[selected_mask])
+
+    regressor = best_model.named_steps["regressor"]
+    explainer = shap.LinearExplainer(regressor, X_test_transformed)
+    shap_values = explainer.shap_values(X_test_transformed)
+
+    shap_path = Path(__file__).parent / "shap_summary.png"
+    plt.figure(figsize=(10, 8))
+    shap.summary_plot(shap_values, X_test_transformed, feature_names=feature_names, show=False, max_display=20)
+    plt.tight_layout()
+    plt.savefig(shap_path, dpi=100, bbox_inches="tight")
+    plt.close()
+    print(f"\nSHAP summary plot guardado en: {shap_path}")
+
+
+    # ============================================================
+    # 11. Publicar modelo en W&B (solo promueve a production si mejora el MAE)
     # ============================================================
 
     prod_meta = get_production_metadata(
